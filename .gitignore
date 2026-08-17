@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+
+# 运行数据
+data/*
+!data/.gitkeep
+
+# 测试产物
+test-bots/
+
+# 本地生成文件
+启动WebUI.bat
+data_backup_*/
+debug.log
+
+# Node / 前端构建
+frontend/node_modules/
+frontend/dist/
+
+# 系统文件
+Thumbs.db
+.DS_Store
+
+# 编辑器
+.idea/
+.vscode/

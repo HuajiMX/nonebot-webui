@@ -1,0 +1,52 @@
+name: Build & Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check version matches tag
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          VER="$(sed -n 's/.*__version__ = "\([^"]*\)".*/\1/p' backend/__init__.py)"
+          if [ "$TAG" != "$VER" ]; then
+            echo "tag v${TAG} 与 backend/__init__.py 版本 ${VER} 不一致，请先修改版本号"
+            exit 1
+          fi
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Build frontend
+        working-directory: frontend
+        run: |
+          npm ci
+          npm run build
+
+      - name: Package release zip
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq zip
+          mkdir -p pkg
+          cp -r backend frontend install.py install.ps1 install.sh start.py update.py requirements.txt README.md pkg/
+          rm -rf pkg/frontend/node_modules
+          find pkg -name "__pycache__" -type d -exec rm -rf {} +
+          (cd pkg && zip -r ../nonebot-webui.zip .)
+          unzip -l nonebot-webui.zip | head -30
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: nonebot-webui.zip
+          generate_release_notes: true

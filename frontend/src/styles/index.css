@@ -1,0 +1,79 @@
+:root {
+  --nb-orange: #ea5252;
+  --nb-orange-dark: #d94545;
+  --nb-orange-light: #fdeeee;
+  --nb-gray: #f2f2f2;
+  --nb-text: #303133;
+  --nb-text-secondary: #909399;
+  --nb-border: #e4e7ed;
+
+  /* Element Plus 主题色 */
+  --el-color-primary: #ea5252;
+  --el-color-primary-light-3: #ef7a7a;
+  --el-color-primary-light-5: #f5a2a2;
+  --el-color-primary-light-7: #f9c6c6;
+  --el-color-primary-light-8: #fbd9d9;
+  --el-color-primary-light-9: #fdeeee;
+  --el-color-primary-dark-2: #d94545;
+  --el-border-radius-base: 8px;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", -apple-system, sans-serif;
+  color: var(--nb-text);
+  background: var(--nb-gray);
+}
+
+a {
+  text-decoration: none;
+  color: inherit;
+}
+
+.page {
+  padding: 20px 24px;
+}
+
+.page-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 16px;
+}
+
+.card {
+  background: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.04);
+  padding: 18px 20px;
+}
+
+.muted {
+  color: var(--nb-text-secondary);
+  font-size: 13px;
+}
+
+/* 滚动条 */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #d3d6db;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* 终端区域 */
+.xterm {
+  height: 100%;
+}
