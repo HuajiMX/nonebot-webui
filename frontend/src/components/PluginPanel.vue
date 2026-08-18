@@ -20,7 +20,7 @@
     <el-table :data="plugins" v-loading="loading" style="width: 100%">
       <el-table-column label="插件名称" min-width="170">
         <template #default="{ row }">
-          <b>{{ row.name }}</b>
+          <b>{{ row.display_name || row.name }}</b>
           <el-tag v-if="row.kind === 'package'" size="small" type="info" effect="plain" style="margin-left: 8px">包</el-tag>
         </template>
       </el-table-column>

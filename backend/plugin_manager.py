@@ -31,6 +31,7 @@ class PluginInfo:
         size: int,
         mtime: float,
         description: str = "",
+        display_name: str = "",
     ) -> None:
         self.name = name
         self.path = path
@@ -39,10 +40,12 @@ class PluginInfo:
         self.size = size
         self.mtime = mtime
         self.description = description
+        self.display_name = display_name
 
     def to_dict(self) -> dict:
         return {
             "name": self.name,
+            "display_name": self.display_name or self.name,
             "path": self.path,
             "kind": self.kind,
             "disabled": self.disabled,
@@ -62,6 +65,30 @@ def _read_docstring(path: Path) -> str:
             return doc.strip().split("\n")[0][:120]
     except (SyntaxError, OSError):
         return ""
+    return ""
+
+
+def _read_plugin_display_name(path: Path) -> str:
+    """读取插件文件中声明的显示名（PLUGIN_NAME = "..."），没有则返回空串。
+
+    可视化插件生成的文件名为 vplugin_xxxx.py，但代码里声明了真实的
+    插件名称（PLUGIN_NAME），列表展示时用它代替模块名。
+    """
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8", errors="replace"))
+    except (SyntaxError, OSError):
+        return ""
+    for node in tree.body:
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(node.targets[0], ast.Name)
+            and node.targets[0].id == "PLUGIN_NAME"
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+        ):
+            name = node.value.value.strip()
+            return name[:120]
     return ""
 
 
@@ -113,6 +140,7 @@ def list_plugins(bot_id: str) -> list[dict]:
                     size=entry.stat().st_size,
                     mtime=entry.stat().st_mtime,
                     description=_read_docstring(entry),
+                    display_name=_read_plugin_display_name(entry),
                 )
             )
         elif entry.is_dir() and (entry / "__init__.py").exists():
