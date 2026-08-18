@@ -165,6 +165,13 @@ def main() -> None:
     print("=" * 50)
 
     py = ensure_venv()
+    # 依赖只装进 .venv；若 install.py 由系统 Python 运行，后续导入
+    # pydantic 等第三方库会失败（ModuleNotFoundError）。检测到当前不在
+    # 虚拟环境中时，自动切换到 .venv 的 Python 重新执行本脚本。
+    if os.environ.get("NB_WEBUI_USE_VENV") != "1" and Path(sys.prefix).resolve() != VENV_DIR.resolve():
+        print(f"切换到虚拟环境 Python：{py}")
+        os.environ["NB_WEBUI_USE_VENV"] = "1"
+        os.execv(str(py), [str(py), str(ROOT / "install.py"), *sys.argv[1:]])
     install_backend(py)
     if not args.skip_frontend:
         build_frontend(force=args.force_build_frontend)
