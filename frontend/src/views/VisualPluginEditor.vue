@@ -1013,7 +1013,6 @@ function onConnUp(ev) {
     flow.edges = flow.edges.filter(
       (e) => !(e.from === connState.from && e.port === connState.port)
     );
-    flow.edges = flow.edges.filter((e) => !(e.from === connState.from && e.to === toId));
     flow.edges.push({ from: connState.from, to: toId, port: connState.port });
     dirty.value = true;
   }
@@ -1073,7 +1072,6 @@ function edgeTarget(from, port) {
 function setEdgeTarget(from, port, to) {
   flow.edges = flow.edges.filter((e) => !(e.from === from && e.port === port));
   if (to) {
-    flow.edges = flow.edges.filter((e) => !(e.from === from && e.to === to));
     flow.edges.push({ from, to, port });
   }
   dirty.value = true;
