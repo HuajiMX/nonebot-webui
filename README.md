@@ -57,23 +57,26 @@
 
 ### 一键安装脚本（推荐）
 
-发布后，未安装用户只需下载一键安装脚本并执行，脚本会自动完成：下载发布包 → 解压 → 安装 Python 依赖 → 设置管理员账号 → 生成启动脚本：
+发布后，未安装用户只需执行一条命令，脚本会自动完成：下载发布包 → 解压 → 安装 Python 依赖 → 设置管理员账号 → 生成启动脚本（命令会先把脚本下载到本地文件再执行，方便查看）：
 
 Windows（PowerShell）：
 
-1. 下载脚本：
-
 ```powershell
-powershell -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.ps1 -OutFile install.ps1"
-```
-
-2. 执行安装：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File install.ps1
+powershell -ExecutionPolicy Bypass -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.ps1 -OutFile install.ps1; .\install.ps1"
 ```
 
 Linux / macOS：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh -o install.sh && bash install.sh
+```
+
+如需先下载脚本查看内容再执行，也可以分两步：
+
+```powershell
+powershell -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.ps1 -OutFile install.ps1"
+powershell -ExecutionPolicy Bypass -File install.ps1
+```
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh -o install.sh
