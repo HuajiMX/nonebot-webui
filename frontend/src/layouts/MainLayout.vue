@@ -64,11 +64,42 @@
         <router-view />
       </main>
     </div>
+
+    <el-dialog
+      v-model="updateVisible"
+      :title="updateDialogTitle"
+      width="620px"
+      :close-on-click-modal="false"
+      :show-close="updateState !== 'running'"
+    >
+      <div ref="updateLogRef" class="update-log">
+        <div
+          v-for="(line, i) in updateLines"
+          :key="i"
+          class="update-log-line"
+          :class="{ err: isUpdateErr(line) }"
+        >{{ line }}</div>
+        <div v-if="updateState === 'running'" class="update-log-line muted">
+          更新进行中，请勿关闭页面…
+        </div>
+      </div>
+      <template #footer>
+        <div v-if="updateState === 'done'" class="update-result ok">
+          更新完毕，请刷新页面。若刷新后仍为旧版，请手动重启 WebUI 服务。
+        </div>
+        <div v-else-if="updateState === 'failed'" class="update-result fail">
+          更新失败，请查看上方日志。
+        </div>
+        <el-button v-if="updateState !== 'running'" type="primary" @click="updateVisible = false">
+          知道了
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, ref } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { ElMessage } from "element-plus";
 import { useAuthStore } from "../stores/auth";
@@ -80,6 +111,12 @@ const auth = useAuthStore();
 const version = ref("0.1.0");
 const updateBanner = ref(null);
 const updating = ref(false);
+const updateVisible = ref(false);
+const updateState = ref("running");
+const updateLines = ref([]);
+const updateLogRef = ref(null);
+let updateBaseline = 0;
+let updatePollTimers = [];
 
 const navs = [
   { path: "/", label: "仪表盘", icon: "Odometer" },
@@ -135,14 +172,73 @@ function dismissUpdate() {
 async function doUpdate() {
   updating.value = true;
   try {
+    updateBaseline = 0;
+    const pre = await fetchRaw("/api/update/log");
+    if (pre && pre.lines) updateBaseline = pre.lines.length;
+    updateLines.value = [];
+    updateState.value = "running";
+    updateVisible.value = true;
+    stopUpdatePolling();
+    updatePollTimers.push(setInterval(pollUpdateLog, 1500));
     const res = await api.post("/update");
-    updateBanner.value = null;
-    ElMessage.success(res.detail || "更新已开始，服务将自动重启，请稍后刷新页面");
-  } catch {
-    /* ignore */
+    if (!res.started) {
+      finishUpdate(true);
+      updateLines.value = [res.detail || "当前已是最新版本"];
+    } else {
+      updateBanner.value = null;
+    }
+  } catch (e) {
+    finishUpdate(false);
   } finally {
     updating.value = false;
   }
+}
+
+const updateDialogTitle = computed(() => {
+  if (updateState.value === "done") return "更新完成";
+  if (updateState.value === "failed") return "更新失败";
+  return "正在更新";
+});
+
+function isUpdateErr(line) {
+  return /error|traceback|exception|失败|错误|warning/i.test(line);
+}
+
+function stopUpdatePolling() {
+  updatePollTimers.forEach((t) => clearInterval(t));
+  updatePollTimers = [];
+}
+
+async function fetchRaw(path) {
+  try {
+    const resp = await fetch(path);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch {
+    return null;
+  }
+}
+
+function finishUpdate(ok) {
+  updateState.value = ok ? "done" : "failed";
+  stopUpdatePolling();
+}
+
+async function pollUpdateLog() {
+  const data = await fetchRaw("/api/update/log");
+  if (!data) {
+    // 服务已停止或会话失效：若健康检查可用，说明新服务已起来
+    if (await fetchRaw("/api/health")) finishUpdate(true);
+    return;
+  }
+  const lines = data.lines || [];
+  updateLines.value = lines.slice(updateBaseline);
+  await nextTick();
+  if (updateLogRef.value) {
+    updateLogRef.value.scrollTop = updateLogRef.value.scrollHeight;
+  }
+  if (data.state === "failed") finishUpdate(false);
+  else if (data.state === "done") finishUpdate(true);
 }
 
 onMounted(async () => {
@@ -154,6 +250,8 @@ onMounted(async () => {
   }
   loadUpdate();
 });
+
+onUnmounted(stopUpdatePolling);
 </script>
 
 <style scoped>
@@ -323,5 +421,45 @@ onMounted(async () => {
   white-space: pre-line;
   max-height: 64px;
   overflow: auto;
+}
+
+.update-log {
+  max-height: 340px;
+  overflow: auto;
+  background: #f5f7fa;
+  border: 1px solid var(--nb-border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-family: Consolas, "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.7;
+}
+
+.update-log-line {
+  white-space: pre-wrap;
+  word-break: break-all;
+  color: #303133;
+}
+
+.update-log-line.err {
+  color: #f56c6c;
+}
+
+.update-log-line.muted {
+  color: #909399;
+}
+
+.update-result {
+  margin-bottom: 8px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.update-result.ok {
+  color: #67c23a;
+}
+
+.update-result.fail {
+  color: #f56c6c;
 }
 </style>

@@ -84,6 +84,16 @@ def _port_alive(port: int) -> bool:
         return False
 
 
+def wait_server_up(port: int, timeout: float = 25) -> bool:
+    """等待端口恢复监听，用于确认重启是否成功。"""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _port_alive(port):
+            return True
+        time.sleep(1)
+    return False
+
+
 def download(url: str, dest: Path) -> None:
     log(f"下载发布包：{url}")
     req = urllib.request.Request(url, headers={"User-Agent": "nonebot-webui-updater"})
@@ -165,6 +175,10 @@ def restart_server() -> None:
     log_file = DATA_DIR / "webui_server.log"
     log_file.parent.mkdir(parents=True, exist_ok=True)
     creationflags = 0x08000000 if os.name == "nt" else 0
+    popen_kwargs = {}
+    if os.name != "nt":
+        # 让新服务脱离更新进程的会话，避免更新脚本退出时被连带结束
+        popen_kwargs["start_new_session"] = True
     with open(log_file, "ab") as fh:
         subprocess.Popen(
             [str(python), str(ROOT / "start.py")],
@@ -173,6 +187,7 @@ def restart_server() -> None:
             stderr=subprocess.STDOUT,
             creationflags=creationflags,
             close_fds=True,
+            **popen_kwargs,
         )
 
 
@@ -195,16 +210,22 @@ def main() -> int:
         else:
             log("未发现 data/，跳过备份")
 
+        # 先下载（此时旧服务仍在运行，前端可实时看到进度），再停服替换
+        download(args.url, tmp_zip)
         stop_server(args.port, args.pid or None)
         time.sleep(2)
 
-        download(args.url, tmp_zip)
         apply_update(tmp_zip)
         log("更新内容应用完成")
 
         if not args.skip_restart:
             restart_server()
-        log("===== 更新完成 =====")
+            if wait_server_up(args.port):
+                log("===== 更新完成，服务已重启 =====")
+            else:
+                log("===== 更新完成，但未检测到服务启动，请手动重启 WebUI 服务 =====")
+        else:
+            log("===== 更新完成 =====")
         return 0
     except Exception as exc:  # noqa: BLE001
         log(f"更新失败：{exc}")
