@@ -1498,6 +1498,7 @@ onBeforeUnmount(() => {
 .edge-line {
   fill: none;
   stroke-width: 2;
+  stroke: #909399;
 }
 
 .edge-line.next {
@@ -1532,6 +1533,7 @@ onBeforeUnmount(() => {
 .edge-dot {
   stroke-width: 1;
   fill: #fff;
+  stroke: #909399;
   pointer-events: auto;
   cursor: pointer;
 }
