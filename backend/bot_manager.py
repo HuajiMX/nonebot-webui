@@ -361,8 +361,12 @@ class BotManager:
                 bot.managed = False
                 self.update_bot(bot)
                 log("已注册现有项目")
-                self.ensure_bot_entry(bot, log)
-                self.sync_plugin_dir(bot, log)
+                try:
+                    self.ensure_bot_entry(bot, log)
+                    self.sync_plugin_dir(bot, log)
+                except Exception as exc:  # noqa: BLE001
+                    # 入口/目录同步失败不影响注册本身，启动时会自动重试
+                    log(f"入口/插件目录同步失败：{exc}（启动时会自动重试）")
                 return
 
             if not bot_dir.exists():
@@ -523,14 +527,22 @@ class BotManager:
         if not isinstance(tool_nonebot, dict):
             return None
         modules: list[str] = []
-        adapters = tool_nonebot.get("adapters") or {}
-        for specs in adapters.values():
+        adapters = tool_nonebot.get("adapters")
+        if isinstance(adapters, dict):
+            specs_iter = adapters.values()
+        elif isinstance(adapters, list):
+            # 兼容 [tool.nonebot] 下 adapters = [{...}] 的列表格式
+            specs_iter = adapters
+        else:
+            specs_iter = []
+        for specs in specs_iter:
             if isinstance(specs, list):
                 for spec in specs:
                     if isinstance(spec, dict) and spec.get("module_name"):
                         modules.append(str(spec["module_name"]))
-            elif isinstance(specs, dict) and specs.get("module_name"):
-                modules.append(str(specs["module_name"]))
+            elif isinstance(specs, dict):
+                if specs.get("module_name"):
+                    modules.append(str(specs["module_name"]))
         return modules
 
     @staticmethod
