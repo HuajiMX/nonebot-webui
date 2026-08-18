@@ -362,6 +362,7 @@ class BotManager:
                 self.update_bot(bot)
                 log("已注册现有项目")
                 self.ensure_bot_entry(bot, log)
+                self.sync_plugin_dir(bot, log)
                 return
 
             if not bot_dir.exists():
@@ -532,6 +533,40 @@ class BotManager:
                 modules.append(str(specs["module_name"]))
         return modules
 
+    @staticmethod
+    def _pyproject_nonebot_plugin_dirs(bot_dir: Path) -> Optional[list[str]]:
+        """解析 pyproject.toml 的 [tool.nonebot] plugin_dirs，返回规范化路径列表。
+
+        返回 None 表示没有 pyproject.toml 或未声明 plugin_dirs。
+        """
+        pyproject = bot_dir / "pyproject.toml"
+        if not pyproject.exists():
+            return None
+        try:
+            with pyproject.open("rb") as fh:
+                data = tomllib.load(fh)
+        except Exception:  # noqa: BLE001 - TOML 解析失败按未声明处理
+            return None
+        tool_nonebot = (data.get("tool") or {}).get("nonebot")
+        if not isinstance(tool_nonebot, dict):
+            return None
+        raw = tool_nonebot.get("plugin_dirs")
+        if not isinstance(raw, list):
+            return None
+        dirs: list[str] = []
+        for d in raw:
+            if not isinstance(d, str) or not d.strip():
+                continue
+            p = Path(d).expanduser()
+            if not p.is_absolute():
+                p = bot_dir / p
+            try:
+                rel = p.resolve().relative_to(bot_dir.resolve())
+                dirs.append(rel.as_posix())
+            except ValueError:
+                dirs.append(str(p))
+        return dirs or None
+
     def ensure_bot_entry(
         self, bot: Bot, log: Optional[Callable[[str], None]] = None
     ) -> bool:
@@ -565,6 +600,27 @@ class BotManager:
         )
         if log:
             log("未检测到 bot.py，已根据 pyproject.toml 自动生成标准入口")
+        return True
+
+    def sync_plugin_dir(
+        self, bot: Bot, log: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """已有项目：按 pyproject.toml 的 plugin_dirs 同步 WebUI 记录的插件目录。
+
+        已有项目的实际插件加载以项目自己的 pyproject.toml 为准，WebUI 的
+        插件列表/上传目录应与之保持一致，否则会一直停留在默认的 src/plugins。
+        """
+        dirs = self._pyproject_nonebot_plugin_dirs(Path(bot.directory))
+        if not dirs:
+            return False
+        target = dirs[0]
+        if bot.plugin_dir == target:
+            return False
+        old = bot.plugin_dir
+        bot.plugin_dir = target
+        self.update_bot(bot)
+        if log:
+            log(f"按 pyproject.toml 同步插件目录：{old} -> {target}")
         return True
 
     # ---------- 配置 ----------

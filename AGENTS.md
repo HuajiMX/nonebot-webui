@@ -103,7 +103,7 @@ cd frontend; npm install; npm run build
 - 机器人由 WebUI 生成 NoneBot2 脚手架并托管进程（`managed=True`），状态机：`creating / starting / running / stopping / stopped / error`。
 - 适配器定义在 `bot_manager.ADAPTERS`；创建时选定协议（默认 OneBot V11）。
 - `webui_disabled_plugins.json`（机器人目录内）记录被停用的插件，仅托管机器人支持过滤加载。
-- 注册已有项目：目录已存在且非空时 `managed=False`，WebUI 自动识别 `.venv`/`venv`/`env` 并解析 Python，不重建脚手架；缺 `bot.py` 时按 `pyproject.toml` 的 `[tool.nonebot]` 自动生成标准入口（适配器取 `[tool.nonebot.adapters]` 的 module_name，未声明时回退注册时选择的协议），已有 `bot.py` 不覆盖。
+- 注册已有项目：目录已存在且非空时 `managed=False`，WebUI 自动识别 `.venv`/`venv`/`env` 并解析 Python，不重建脚手架；缺 `bot.py` 时按 `pyproject.toml` 的 `[tool.nonebot]` 自动生成标准入口（适配器取 `[tool.nonebot.adapters]` 的 module_name，未声明时回退注册时选择的协议），已有 `bot.py` 不覆盖；`plugin_dir` 也会按 `[tool.nonebot] plugin_dirs` 的首项自动同步（注册时 + 启动时兜底，仅对 `managed=False` 生效），插件列表/上传目录与实际加载目录保持一致。
 - 启动一律以 `[python, bot.py]`（cwd=机器人目录）拉起子进程；启动前兜底检查入口，无法生成时给出明确错误而非「can't open file」。
 - **运行判定**：`process_manager.is_running()` 只看 WebUI 自己拉起的子进程（`proc.poll() is None`），WebUI 外部启动的机器人进程不识别；WebUI 重启时 lifespan 会把遗留的 running/stopping 机器人 SIGTERM 并统一置 `stopped`（机器人不会自动恢复）。
 

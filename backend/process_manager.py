@@ -145,6 +145,14 @@ class ProcessManager:
                     "机器人目录下未找到入口文件 bot.py，且无法自动生成"
                     "（需要 pyproject.toml 的 [tool.nonebot] 配置）"
                 )
+        # 已有项目：插件目录以项目 pyproject.toml 为准，修正历史注册遗留的默认值
+        if not bot.managed:
+            bot_manager.sync_plugin_dir(
+                bot,
+                log=lambda msg: self._feed(
+                    bot_id, {"type": "log", "data": msg, "ts": time.time()}
+                ),
+            )
 
         env = os.environ.copy()
         env.setdefault("PYTHONUTF8", "1")
