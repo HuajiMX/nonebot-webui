@@ -14,6 +14,8 @@ import hashlib
 import io
 import os
 import shutil
+import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -51,20 +53,34 @@ def stop_server(port: int, pid: int | None) -> None:
     targets = set()
     if pid:
         targets.add(pid)
+    # 枚举监听端口的进程（psutil 在部分 Linux 环境会因权限失败，失败不阻塞终止）
     try:
         import psutil
 
-        for conn in psutil.net_connections(kind="tcp"):
-            if conn.laddr and conn.laddr.port == port and conn.status == "LISTEN":
-                targets.add(conn.pid)
-        for pid_ in targets:
-            try:
-                psutil.Process(pid_).terminate()
-                log(f"已请求停止进程 {pid_}")
-            except Exception:  # noqa: BLE001
-                pass
-    except Exception:  # noqa: BLE001
-        log("无法通过 psutil 停止进程（将直接继续更新）")
+        try:
+            for conn in psutil.net_connections(kind="tcp"):
+                if conn.laddr and conn.laddr.port == port and conn.status == "LISTEN" and conn.pid:
+                    targets.add(conn.pid)
+        except Exception as exc:  # noqa: BLE001
+            log(f"psutil 无法枚举端口 {port} 的占用进程（{exc}）")
+    except Exception as exc:  # noqa: BLE001
+        log(f"psutil 不可用：{exc}")
+
+    for pid_ in targets:
+        try:
+            import psutil
+
+            psutil.Process(pid_).terminate()
+            log(f"已请求停止进程 {pid_}")
+        except Exception as exc:  # noqa: BLE001
+            log(f"终止进程 {pid_} 失败（{exc}）")
+            if os.name != "nt":
+                try:
+                    os.kill(pid_, signal.SIGTERM)
+                    log(f"已向进程 {pid_} 发送 SIGTERM")
+                except Exception as exc2:  # noqa: BLE001
+                    log(f"向进程 {pid_} 发送 SIGTERM 失败：{exc2}")
+
     for _ in range(15):
         if not _port_alive(port):
             return
@@ -73,6 +89,12 @@ def stop_server(port: int, pid: int | None) -> None:
 
 
 def _port_alive(port: int) -> bool:
+    # 优先用 TCP 直连探测，不依赖 psutil（避免权限问题导致误判）
+    try:
+        with socket.create_connection(("127.0.0.1", port), timeout=1):
+            return True
+    except OSError:
+        pass
     try:
         import psutil
 
