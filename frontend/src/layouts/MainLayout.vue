@@ -24,7 +24,11 @@
 
       <div class="sidebar-footer">
         <div class="version">v{{ version }}</div>
-        <div class="copyright">© 2026 HuajiMX</div>
+        <div class="copyright">
+          © {{ year }}
+          <a href="https://github.com/HuajiMX" target="_blank" rel="noopener">HuajiMX</a>
+          · MIT License
+        </div>
       </div>
     </aside>
 
@@ -110,6 +114,7 @@ const router = useRouter();
 const auth = useAuthStore();
 const updateStore = useUpdateStore();
 const version = ref("0.1.0");
+const year = new Date().getFullYear();
 const updating = ref(false);
 const updateLogRef = ref(null);
 const dismissedVersion = ref(localStorage.getItem("nb_update_dismissed") || "");
@@ -310,6 +315,15 @@ onMounted(async () => {
   margin-top: 4px;
   font-size: 12px;
   color: var(--nb-text-secondary);
+}
+
+.copyright a {
+  color: var(--nb-orange);
+  text-decoration: none;
+}
+
+.copyright a:hover {
+  text-decoration: underline;
 }
 
 .main {
