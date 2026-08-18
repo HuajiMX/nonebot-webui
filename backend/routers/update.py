@@ -30,8 +30,9 @@ def _server_port() -> int:
 
 
 @router.get("/status")
-def update_status(_: str = Depends(current_user)) -> dict:
-    return check_update()
+def update_status(force: bool = False, _: str = Depends(current_user)) -> dict:
+    """版本检查；force=true 时绕过 30 分钟缓存重新查询。"""
+    return check_update(force=force)
 
 
 @router.get("/log")

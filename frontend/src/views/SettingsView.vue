@@ -36,6 +36,25 @@
     </div>
 
     <div class="card">
+      <h3 class="block-title">版本更新</h3>
+      <div class="kv" style="max-width: 420px">
+        <div class="kv-row"><span>当前版本</span><b>v{{ updateStore.current || "-" }}</b></div>
+        <div class="kv-row">
+          <span>最新版本</span>
+          <b>{{ updateStore.checking ? "检查中…" : (updateStore.latest ? `v${updateStore.latest}` : "-") }}</b>
+        </div>
+        <div v-if="updateStore.hasUpdate && updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
+        <div v-if="updateStore.latest && !updateStore.hasUpdate" class="update-hint">当前已是最新版本</div>
+      </div>
+      <div class="update-actions">
+        <el-button :loading="updateStore.checking" @click="checkUpdate">检测更新</el-button>
+        <el-button v-if="updateStore.hasUpdate" type="primary" :loading="updating" @click="startUpdate">
+          立即更新
+        </el-button>
+      </div>
+    </div>
+
+    <div class="card">
       <h3 class="block-title">关于</h3>
       <p class="muted" style="line-height: 1.8">
         NoneBot2 WebUI 是一个面向 NoneBot2 的网页管理面板，支持机器人创建与管理、插件启停与安装、实时日志、
@@ -49,10 +68,13 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "../api";
+import { useUpdateStore } from "../stores/update";
 
 const form = reactive({ old_password: "", new_password: "", confirm: "" });
 const saving = ref(false);
 const snap = ref({});
+const updating = ref(false);
+const updateStore = useUpdateStore();
 
 const memText = computed(() => {
   const m = snap.value.memory;
@@ -94,9 +116,43 @@ async function save() {
   }
 }
 
+async function checkUpdate() {
+  try {
+    const info = await updateStore.check(true);
+    if (info.has_update) {
+      ElMessage.success(`发现新版本 v${info.latest}`);
+    } else if (info.latest) {
+      ElMessage.success("当前已是最新版本");
+    } else {
+      ElMessage.warning("检查更新失败，请稍后重试");
+    }
+  } catch {
+    ElMessage.error("检查更新失败");
+  }
+}
+
+async function startUpdate() {
+  updating.value = true;
+  try {
+    const res = await updateStore.startUpdate();
+    if (res && res.started) {
+      ElMessage.success(res.detail || "更新已开始");
+    }
+  } catch {
+    /* ignore，失败状态由更新对话框展示 */
+  } finally {
+    updating.value = false;
+  }
+}
+
 onMounted(async () => {
   try {
     snap.value = await api.get("/monitor");
+  } catch {
+    /* ignore */
+  }
+  try {
+    await updateStore.check();
   } catch {
     /* ignore */
   }
@@ -139,6 +195,27 @@ onMounted(async () => {
 .kv-row b {
   font-weight: 500;
   text-align: right;
+}
+
+.update-actions {
+  margin-top: 14px;
+  display: flex;
+  gap: 10px;
+}
+
+.update-notes {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: var(--nb-text-secondary);
+  white-space: pre-line;
+  max-height: 80px;
+  overflow: auto;
+}
+
+.update-hint {
+  margin-top: 10px;
+  font-size: 12.5px;
+  color: #67c23a;
 }
 
 .ellipsis {
