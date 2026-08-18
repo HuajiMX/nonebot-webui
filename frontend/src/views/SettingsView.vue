@@ -21,59 +21,46 @@
         </el-form>
       </div>
 
-      <div class="card">
-        <h3 class="block-title">服务器信息</h3>
-        <div class="kv">
-          <div class="kv-row"><span>主机名</span><b>{{ snap.hostname || "-" }}</b></div>
-          <div class="kv-row"><span>系统</span><b class="ellipsis">{{ snap.platform || "-" }}</b></div>
-          <div class="kv-row"><span>Python</span><b>{{ snap.python || "-" }}</b></div>
-          <div class="kv-row"><span>WebUI 版本</span><b>v{{ snap.webui_version || "-" }}</b></div>
-          <div class="kv-row"><span>CPU 核心</span><b>{{ snap.cpu?.count || "-" }}</b></div>
-          <div class="kv-row"><span>内存</span><b>{{ memText }}</b></div>
-          <div class="kv-row"><span>磁盘</span><b>{{ diskText }}</b></div>
+      <div class="card update-card">
+        <h3 class="block-title update-title">
+          <span>版本更新</span>
+          <el-tag
+            v-if="updateStore.latest && !updateStore.checking"
+            :type="updateStore.hasUpdate ? 'danger' : 'success'"
+            size="small"
+            effect="light"
+            round
+          >
+            {{ updateStore.hasUpdate ? `发现新版本 v${updateStore.latest}` : "已是最新版本" }}
+          </el-tag>
+        </h3>
+
+        <div class="version-row">
+          <div class="version-item">
+            <span class="version-label">当前版本</span>
+            <span class="version-value">v{{ updateStore.current || "-" }}</span>
+          </div>
+          <el-icon class="version-arrow"><ArrowRight /></el-icon>
+          <div class="version-item">
+            <span class="version-label">最新版本</span>
+            <span class="version-value" :class="{ newest: updateStore.hasUpdate }">
+              {{ updateStore.checking ? "检查中…" : (updateStore.latest ? `v${updateStore.latest}` : "-") }}
+            </span>
+          </div>
         </div>
-      </div>
-    </div>
 
-    <div class="card update-card">
-      <h3 class="block-title update-title">
-        <span>版本更新</span>
-        <el-tag
-          v-if="updateStore.latest && !updateStore.checking"
-          :type="updateStore.hasUpdate ? 'danger' : 'success'"
-          size="small"
-          effect="light"
-          round
-        >
-          {{ updateStore.hasUpdate ? `发现新版本 v${updateStore.latest}` : "已是最新版本" }}
-        </el-tag>
-      </h3>
+        <div v-if="updateStore.hasUpdate && updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
 
-      <div class="version-row">
-        <div class="version-item">
-          <span class="version-label">当前版本</span>
-          <span class="version-value">v{{ updateStore.current || "-" }}</span>
+        <div class="update-actions">
+          <el-button :loading="updateStore.checking" @click="checkUpdate">
+            <el-icon v-if="!updateStore.checking"><Refresh /></el-icon>
+            <span>检测更新</span>
+          </el-button>
+          <el-button v-if="updateStore.hasUpdate" type="primary" :loading="updating" @click="startUpdate">
+            <el-icon v-if="!updating"><Download /></el-icon>
+            <span>立即更新</span>
+          </el-button>
         </div>
-        <el-icon class="version-arrow"><ArrowRight /></el-icon>
-        <div class="version-item">
-          <span class="version-label">最新版本</span>
-          <span class="version-value" :class="{ newest: updateStore.hasUpdate }">
-            {{ updateStore.checking ? "检查中…" : (updateStore.latest ? `v${updateStore.latest}` : "-") }}
-          </span>
-        </div>
-      </div>
-
-      <div v-if="updateStore.hasUpdate && updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
-
-      <div class="update-actions">
-        <el-button :loading="updateStore.checking" @click="checkUpdate">
-          <el-icon v-if="!updateStore.checking"><Refresh /></el-icon>
-          <span>检测更新</span>
-        </el-button>
-        <el-button v-if="updateStore.hasUpdate" type="primary" :loading="updating" @click="startUpdate">
-          <el-icon v-if="!updating"><Download /></el-icon>
-          <span>立即更新</span>
-        </el-button>
       </div>
     </div>
 
@@ -88,28 +75,15 @@
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage } from "element-plus";
 import api from "../api";
 import { useUpdateStore } from "../stores/update";
 
 const form = reactive({ old_password: "", new_password: "", confirm: "" });
 const saving = ref(false);
-const snap = ref({});
 const updating = ref(false);
 const updateStore = useUpdateStore();
-
-const memText = computed(() => {
-  const m = snap.value.memory;
-  if (!m) return "-";
-  return `${(m.used / 1024 / 1024 / 1024).toFixed(1)} / ${(m.total / 1024 / 1024 / 1024).toFixed(1)} GB`;
-});
-
-const diskText = computed(() => {
-  const d = snap.value.disk;
-  if (!d) return "-";
-  return `${(d.used / 1024 / 1024 / 1024).toFixed(1)} / ${(d.total / 1024 / 1024 / 1024).toFixed(1)} GB`;
-});
 
 async function save() {
   if (!form.old_password || !form.new_password) {
@@ -170,11 +144,6 @@ async function startUpdate() {
 
 onMounted(async () => {
   try {
-    snap.value = await api.get("/monitor");
-  } catch {
-    /* ignore */
-  }
-  try {
     await updateStore.check();
   } catch {
     /* ignore */
@@ -199,6 +168,22 @@ onMounted(async () => {
 .block-title {
   margin: 0 0 16px;
   font-size: 16px;
+}
+
+.settings-grid .card {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-grid .card .el-form {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-grid .card .el-form .el-form-item:last-child {
+  margin-top: auto;
 }
 
 .update-title {
@@ -244,27 +229,9 @@ onMounted(async () => {
   font-size: 16px;
 }
 
-.kv-row {
-  display: flex;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 9px 0;
-  border-bottom: 1px dashed var(--nb-border);
-  font-size: 13.5px;
-}
-
-.kv-row span {
-  color: var(--nb-text-secondary);
-  flex-shrink: 0;
-}
-
-.kv-row b {
-  font-weight: 500;
-  text-align: right;
-}
-
 .update-actions {
-  margin-top: 14px;
+  margin-top: auto;
+  padding-top: 14px;
   display: flex;
   gap: 10px;
 }
@@ -285,15 +252,5 @@ onMounted(async () => {
   max-height: 96px;
   overflow: auto;
   line-height: 1.6;
-}
-
-.card + .card {
-  margin-top: 16px;
-}
-
-.ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 </style>
