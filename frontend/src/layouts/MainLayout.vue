@@ -24,6 +24,7 @@
 
       <div class="sidebar-footer">
         <div class="version">v{{ version }}</div>
+        <div class="copyright">© 2026 HuajiMX</div>
       </div>
     </aside>
 
@@ -240,6 +241,12 @@ onMounted(async () => {
 }
 
 .version {
+  font-size: 12px;
+  color: var(--nb-text-secondary);
+}
+
+.copyright {
+  margin-top: 4px;
   font-size: 12px;
   color: var(--nb-text-secondary);
 }

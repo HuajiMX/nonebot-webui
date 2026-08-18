@@ -66,6 +66,7 @@
               选择文件夹
             </el-button>
           </div>
+          <div class="muted" style="margin-top: 6px">也可以选择已有的机器人目录，直接添加并托管现有机器人</div>
         </el-form-item>
         <el-form-item label="协议 / 适配器">
           <el-select v-model="form.adapter" style="width: 100%">

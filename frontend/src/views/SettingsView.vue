@@ -39,7 +39,7 @@
       <h3 class="block-title">关于</h3>
       <p class="muted" style="line-height: 1.8">
         NoneBot2 WebUI 是一个面向 NoneBot2 的网页管理面板，支持机器人创建与管理、插件启停与安装、实时日志、
-        内置终端与服务器监控。主题色 #ea5252。
+        内置终端与服务器监控。
       </p>
     </div>
   </div>
