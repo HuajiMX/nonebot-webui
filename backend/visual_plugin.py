@@ -732,6 +732,7 @@ async def _visual_collect_preprocessor(bot: Bot, event: Event):
             ctx[var] = {"index": 0, "text": "退出"}
             if _sess is not None:
                 _sess[var] = ctx[var]
+            await _send(ctx, [{"type": "text", "value": "已退出"}], None)
             await pend["dispatcher"](ctx, 0)
         elif text.isdigit() and 1 <= int(text) <= len(options):
             idx = int(text)
@@ -740,7 +741,7 @@ async def _visual_collect_preprocessor(bot: Bot, event: Event):
                 _sess[var] = ctx[var]
             await pend["dispatcher"](ctx, idx)
         else:
-            await _send(ctx, [{"type": "text", "value": pend.get("prompt_text", "")}], None)
+            await _send(ctx, [{"type": "text", "value": "未知选项，请重新输入："}], None)
             _pending[key] = pend
         raise IgnoredException("handled by visual plugin choice")
     # 信息收集
@@ -911,7 +912,7 @@ def _emit_step(node: dict, flow: dict) -> str:
         options = cfg.get("options") or []
         var = (cfg.get("var") or "choice").strip() or "choice"
         lines.append(
-            f"    _opt_lines = [f\"{{i + 1}}. {{_tpl(opt, ctx)}}\" for i, opt in enumerate({_py_literal(options)})]"
+            f"    _opt_lines = [f\"[{{i + 1}}] {{_tpl(opt, ctx)}}\" for i, opt in enumerate({_py_literal(options)})]"
         )
         lines.append(f"    _text = _tpl({_py_literal(prompt)}, ctx)")
         lines.append("    if _opt_lines:")
