@@ -15,7 +15,7 @@ NoneBot2 WebUI 是一个本地 Web 管理面板，用于：
 
 ## 技术栈
 
-- 后端：Python 3.10+ / FastAPI / Uvicorn / psutil / WebSocket；依赖见 `requirements.txt`
+- 后端：Python 3.10+ / FastAPI / Uvicorn / psutil / WebSocket；依赖见 `requirements.txt`（Python 3.10 解析 `pyproject.toml` 额外依赖 `tomli`，3.11+ 用内置 `tomllib`）
 - 前端：Vue 3 / Vite / Element Plus / ECharts / xterm.js / Pinia / Vue Router / axios
 - 存储：JSON 文件（`data/` 目录，可用环境变量 `NB_WEBUI_DATA` 覆盖路径）
 - 机器人侧：NoneBot2 + OneBot V11（默认），进程由 WebUI 托管
@@ -43,13 +43,14 @@ frontend/
   src/api/index.js    axios 封装：响应拦截、401 跳登录、wsUrl 自动带 token
   src/router/index.js 路由守卫：/setup、/login 公开，其余需登录
   src/stores/auth.js  Pinia 认证状态
-  src/layouts/MainLayout.vue  顶栏（含版本更新横幅，localStorage 记录已忽略版本）
+  src/stores/update.js  Pinia 更新状态（版本检查、更新进度轮询；顶栏横幅与设置页共用）
+  src/layouts/MainLayout.vue  顶栏（版本更新横幅 + 更新进度对话框，localStorage 记录已忽略版本）
   src/views/          Login / Setup / Dashboard / Bots / BotDetail / VisualPlugins / VisualPluginEditor / Settings
   src/components/     LogPanel / PluginPanel / StatusTag / TerminalPanel
 data/                 运行时数据（gitignored，仅保留 .gitkeep，见下方约定）
-install.py            一键安装（建 venv、装依赖、建管理员、写配置、生成 启动WebUI.bat）
+install.py            一键安装（自动切换到 .venv Python 执行；建 venv、装依赖、建管理员、写配置、生成 启动WebUI.bat）
 install.ps1/.sh       一键安装引导脚本（下载发布包 → 解压 → 运行 install.py）
-update.py             一键更新脚本（WebUI「立即更新」按钮触发）
+update.py             一键更新脚本（WebUI「立即更新」按钮触发；进度实时写入 data/update.log）
 start.py              服务入口（读取 data/config.json 的 host/port，默认 0.0.0.0:9527）
 scripts/              Playwright 冒烟测试
 .github/workflows/release.yml  打 v* tag 时自动构建前端并发布 nonebot-webui.zip
@@ -80,7 +81,7 @@ cd frontend; npm install; npm run build
 | `/api/terminal` | 终端（WebSocket，连接需带 token 查询参数） |
 | `/api/monitor` | 系统监控数据 |
 | `/api/visual-plugins` | 可视化插件 CRUD、`/catalog` 组件目录、安装/卸载到机器人 |
-| `/api/update` | `GET /status` 版本检查、`POST /` 触发更新 |
+| `/api/update` | `GET /status` 版本检查（`?force=true` 绕过缓存）、`GET /log` 更新进度日志、`POST /` 触发更新 |
 | `/api/health` | 健康检查 |
 
 ## 核心机制与不变式（重要）
@@ -95,13 +96,16 @@ cd frontend; npm install; npm run build
 ### 认证
 
 - 首次使用需初始化管理员（`/setup`，或一键安装时创建）；未登录无法访问任何管理接口。
-- 前端把 token 存于 `localStorage.nb_token`；WebSocket 通过查询参数 `token` 传递。
+- 登录态通过 HttpOnly Cookie（`nb_webui_token`）维持，会话保存在后端内存（服务重启后需重新登录）；WebSocket 认证优先取查询参数 `token`（`localStorage.nb_token`），否则用 Cookie。
 
 ### 机器人管理
 
 - 机器人由 WebUI 生成 NoneBot2 脚手架并托管进程（`managed=True`），状态机：`creating / starting / running / stopping / stopped / error`。
 - 适配器定义在 `bot_manager.ADAPTERS`；创建时选定协议（默认 OneBot V11）。
 - `webui_disabled_plugins.json`（机器人目录内）记录被停用的插件，仅托管机器人支持过滤加载。
+- 注册已有项目：目录已存在且非空时 `managed=False`，WebUI 自动识别 `.venv`/`venv`/`env` 并解析 Python，不重建脚手架；缺 `bot.py` 时按 `pyproject.toml` 的 `[tool.nonebot]` 自动生成标准入口（适配器取 `[tool.nonebot.adapters]` 的 module_name，未声明时回退注册时选择的协议），已有 `bot.py` 不覆盖。
+- 启动一律以 `[python, bot.py]`（cwd=机器人目录）拉起子进程；启动前兜底检查入口，无法生成时给出明确错误而非「can't open file」。
+- **运行判定**：`process_manager.is_running()` 只看 WebUI 自己拉起的子进程（`proc.poll() is None`），WebUI 外部启动的机器人进程不识别；WebUI 重启时 lifespan 会把遗留的 running/stopping 机器人 SIGTERM 并统一置 `stopped`（机器人不会自动恢复）。
 
 ### 可视化插件
 
@@ -114,8 +118,10 @@ cd frontend; npm install; npm run build
 ### 安装 / 更新 / 发布
 
 - **一键安装**：用户执行一条命令（先下载 `install.ps1` / `install.sh` 到本地再执行，**不要改回 `iex (irm ...)` / `curl | bash` 管道执行**）→ 脚本下载 GitHub Releases 的 `nonebot-webui.zip` → 解压 → `install.py` 建 venv、装后端依赖（`frontend/dist` 存在则跳过 npm 构建）、创建管理员、写配置、生成 `启动WebUI.bat`。
-- **更新检查**：`version_check.py` 默认访问 GitHub Releases API（`DEFAULT_UPDATE_REPO = "HuajiMX/nonebot-webui"`），30 分钟缓存；`data/config.json` 的 `update_url` 优先。
-- **一键更新**：WebUI 调 `POST /api/update` → 子进程跑 `update.py`：备份 `data/` → 停服务 → 下载新发布包 → 校验关键文件（`install.py` / `start.py` / `backend/main.py` / `frontend/dist/index.html`）→ 替换代码（**保留 `data/` 与 `.venv`**）→ `requirements.txt` 哈希变化才重装依赖 → 重启。
+- `install.py` 若由系统 Python 启动，会检测 `sys.prefix` 并自动切换到 `.venv` 的 Python 重新执行，避免系统 Python 缺依赖（如 pydantic）导致失败。
+- **更新检查**：`version_check.py` 默认访问 GitHub Releases API（`DEFAULT_UPDATE_REPO = "HuajiMX/nonebot-webui"`），30 分钟缓存（`force=true` 绕过）；`data/config.json` 的 `update_url` 优先。
+- **一键更新**：WebUI 调 `POST /api/update` → 子进程跑 `update.py`：备份 `data/` → **先下载**新发布包（旧服务仍在运行，前端可实时看进度）→ 停服务 → 校验关键文件（`install.py` / `start.py` / `backend/main.py` / `frontend/dist/index.html`）→ 替换代码（**保留 `data/` 与 `.venv`**）→ `requirements.txt` 哈希变化才重装依赖 → 重启并检测端口（25 秒内未监听则在日志提示手动重启）。Linux/macOS 下更新子进程与新服务均 `start_new_session` 脱离会话，避免被连带结束。
+- 更新进度实时写入 `data/update.log`，前端经 `GET /api/update/log` 轮询展示在更新对话框中；完成后提示用户刷新页面。
 - **发布新版**：改 `backend/__init__.py` 的 `__version__` → 打 `vX.Y.Z` tag 并推送。GitHub Actions 校验 tag 与版本号一致（不一致构建失败）→ `npm ci` + `npm run build` → 打包代码 + dist 为 `nonebot-webui.zip` → 发布 Release。
 - 发布包应始终包含：`backend/`、`frontend/`（含 `dist/`）、`install.py`、`install.ps1`、`install.sh`、`start.py`、`update.py`、`requirements.txt`、`README.md`、`LICENSE`。
 
