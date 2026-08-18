@@ -117,7 +117,7 @@ cd frontend; npm install; npm run build
 - **更新检查**：`version_check.py` 默认访问 GitHub Releases API（`DEFAULT_UPDATE_REPO = "HuajiMX/nonebot-webui"`），30 分钟缓存；`data/config.json` 的 `update_url` 优先。
 - **一键更新**：WebUI 调 `POST /api/update` → 子进程跑 `update.py`：备份 `data/` → 停服务 → 下载新发布包 → 校验关键文件（`install.py` / `start.py` / `backend/main.py` / `frontend/dist/index.html`）→ 替换代码（**保留 `data/` 与 `.venv`**）→ `requirements.txt` 哈希变化才重装依赖 → 重启。
 - **发布新版**：改 `backend/__init__.py` 的 `__version__` → 打 `vX.Y.Z` tag 并推送。GitHub Actions 校验 tag 与版本号一致（不一致构建失败）→ `npm ci` + `npm run build` → 打包代码 + dist 为 `nonebot-webui.zip` → 发布 Release。
-- 发布包应始终包含：`backend/`、`frontend/`（含 `dist/`）、`install.py`、`install.ps1`、`install.sh`、`start.py`、`update.py`、`requirements.txt`、`README.md`。
+- 发布包应始终包含：`backend/`、`frontend/`（含 `dist/`）、`install.py`、`install.ps1`、`install.sh`、`start.py`、`update.py`、`requirements.txt`、`README.md`、`LICENSE`。
 
 ## 测试
 

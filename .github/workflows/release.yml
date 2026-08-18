@@ -39,7 +39,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq zip
           mkdir -p pkg
-          cp -r backend frontend install.py install.ps1 install.sh start.py update.py requirements.txt README.md pkg/
+          cp -r backend frontend install.py install.ps1 install.sh start.py update.py requirements.txt README.md LICENSE pkg/
           rm -rf pkg/frontend/node_modules
           find pkg -name "__pycache__" -type d -exec rm -rf {} +
           (cd pkg && zip -r ../nonebot-webui.zip .)
