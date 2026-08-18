@@ -1,15 +1,19 @@
 #!/usr/bin/env bash
 # NoneBot2 WebUI 一键安装脚本（Linux / macOS）
 #
-# 一行命令安装（需先安装 Python 3.10+）：
-#   curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh | bash -s HuajiMX/nonebot-webui
+# 用法：
+#   1. 下载本脚本：
+#      curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh -o install.sh
+#   2. 执行安装：
+#      bash install.sh
 #
-# 本机运行：bash install.sh owner/repo
-# 也可用环境变量：REPO=owner/repo URL=... USERNAME=... PASSWORD=... bash install.sh
+# 也可覆盖默认仓库：bash install.sh owner/repo
+# 或使用环境变量：REPO=owner/repo URL=... USERNAME=... PASSWORD=... bash install.sh
+# 默认从 HuajiMX/nonebot-webui 的 GitHub Releases 下载发布包（需先安装 Python 3.10+）
 
 set -euo pipefail
 
-REPO="${1:-${REPO:-}}"
+REPO="${1:-${REPO:-HuajiMX/nonebot-webui}}"
 URL="${2:-${URL:-}}"
 USERNAME="${USERNAME:-}"
 PASSWORD="${PASSWORD:-}"

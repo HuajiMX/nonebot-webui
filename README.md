@@ -55,21 +55,32 @@
 - 用户安装：只需 Python 3.10+（发布包已内置构建好的前端页面，无需 Node.js）
 - 源码开发：另需 Node.js 18+ 与 npm（重新构建前端时使用）
 
-### 一条命令安装（推荐）
+### 一键安装脚本（推荐）
 
-发布后，未安装用户只需执行一条命令，脚本会自动完成：下载发布包 → 解压 → 安装 Python 依赖 → 设置管理员账号 → 生成启动脚本：
+发布后，未安装用户只需下载一键安装脚本并执行，脚本会自动完成：下载发布包 → 解压 → 安装 Python 依赖 → 设置管理员账号 → 生成启动脚本：
 
 Windows（PowerShell）：
 
+1. 下载脚本：
+
 ```powershell
-powershell -ExecutionPolicy Bypass -Command "iex (irm https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.ps1); Install-NoneBotWebUI -Repo HuajiMX/nonebot-webui"
+powershell -Command "Invoke-WebRequest -Uri https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.ps1 -OutFile install.ps1"
+```
+
+2. 执行安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File install.ps1
 ```
 
 Linux / macOS：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh | bash -s HuajiMX/nonebot-webui
+curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.sh -o install.sh
+bash install.sh
 ```
+
+脚本默认使用 `HuajiMX/nonebot-webui` 仓库的 GitHub Releases 发布包；如需覆盖，Windows 可加 `-Repo owner/repo` 参数，Linux / macOS 可用 `bash install.sh owner/repo`。
 
 安装完成后：
 
