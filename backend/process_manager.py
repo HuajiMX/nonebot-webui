@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 from collections import deque
+from pathlib import Path
 from typing import Deque, Dict, Optional, Set
 
 from .bot_manager import bot_manager
@@ -131,6 +132,19 @@ class ProcessManager:
         if not bot.python:
             raise ValueError("未配置 Python 解释器")
         python = bot.python
+
+        # 入口文件兜底：已有项目缺少 bot.py 时，按 pyproject.toml 自动生成标准入口
+        if not (Path(bot.directory) / "bot.py").exists():
+            if not bot_manager.ensure_bot_entry(
+                bot,
+                log=lambda msg: self._feed(
+                    bot_id, {"type": "log", "data": msg, "ts": time.time()}
+                ),
+            ):
+                raise ValueError(
+                    "机器人目录下未找到入口文件 bot.py，且无法自动生成"
+                    "（需要 pyproject.toml 的 [tool.nonebot] 配置）"
+                )
 
         env = os.environ.copy()
         env.setdefault("PYTHONUTF8", "1")

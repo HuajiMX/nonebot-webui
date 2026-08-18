@@ -14,6 +14,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Dict, Optional
 
+try:
+    import tomllib
+except ModuleNotFoundError:  # Python 3.10 使用 tomli 作为替代
+    import tomli as tomllib
+
 from . import config
 from .models import Bot, BotCreate
 from .storage import load_json, save_json
@@ -163,6 +168,23 @@ def _webui_load_plugins(plugin_dirs):
 
 _webui_load_plugins({plugin_dirs!r})
 
+
+if __name__ == "__main__":
+    nonebot.run()
+'''
+
+
+EXISTING_ENTRY_TEMPLATE = '''\
+"""NoneBot2 机器人入口（由 NoneBot2 WebUI 为已有项目自动生成）"""
+
+import nonebot
+
+{adapter_imports}
+
+nonebot.init()
+driver = nonebot.get_driver()
+{adapter_registers}
+nonebot.load_from_toml("pyproject.toml")
 
 if __name__ == "__main__":
     nonebot.run()
@@ -339,6 +361,7 @@ class BotManager:
                 bot.managed = False
                 self.update_bot(bot)
                 log("已注册现有项目")
+                self.ensure_bot_entry(bot, log)
                 return
 
             if not bot_dir.exists():
@@ -479,6 +502,70 @@ class BotManager:
         if venv:
             return str(BotManager._venv_python(venv))
         return shutil.which("python") or sys.executable
+
+    @staticmethod
+    def _pyproject_nonebot_adapters(bot_dir: Path) -> Optional[list[str]]:
+        """解析 pyproject.toml 的 [tool.nonebot]，返回适配器模块名列表。
+
+        返回 None 表示没有 pyproject.toml 或不是 NoneBot 项目（无法自动生成入口）；
+        返回空列表表示是 NoneBot 项目但未在 pyproject 中声明适配器。
+        """
+        pyproject = bot_dir / "pyproject.toml"
+        if not pyproject.exists():
+            return None
+        try:
+            with pyproject.open("rb") as fh:
+                data = tomllib.load(fh)
+        except Exception:  # noqa: BLE001 - TOML 解析失败按非 NoneBot 项目处理
+            return None
+        tool_nonebot = (data.get("tool") or {}).get("nonebot")
+        if not isinstance(tool_nonebot, dict):
+            return None
+        modules: list[str] = []
+        adapters = tool_nonebot.get("adapters") or {}
+        for specs in adapters.values():
+            if isinstance(specs, list):
+                for spec in specs:
+                    if isinstance(spec, dict) and spec.get("module_name"):
+                        modules.append(str(spec["module_name"]))
+            elif isinstance(specs, dict) and specs.get("module_name"):
+                modules.append(str(specs["module_name"]))
+        return modules
+
+    def ensure_bot_entry(
+        self, bot: Bot, log: Optional[Callable[[str], None]] = None
+    ) -> bool:
+        """确保已有项目有可启动的 bot.py，缺失时按 pyproject.toml 自动生成标准入口。"""
+        bot_dir = Path(bot.directory)
+        entry = bot_dir / "bot.py"
+        if entry.exists():
+            return True
+        modules = self._pyproject_nonebot_adapters(bot_dir)
+        if modules is None:
+            # 没有 pyproject.toml 或不是 NoneBot 项目，无法自动生成
+            return False
+        imports, registers = [], []
+        if modules:
+            for i, module in enumerate(modules):
+                imports.append(f"from {module} import Adapter as _Adapter{i}")
+                registers.append(f"driver.register_adapter(_Adapter{i})")
+        else:
+            # pyproject 未声明适配器时，回退到 WebUI 注册时选择的适配器
+            adapter = ADAPTERS.get(bot.adapter)
+            if not adapter or not adapter["import_line"]:
+                return False
+            imports.append(adapter["import_line"])
+            registers.append(adapter["register"])
+        entry.write_text(
+            EXISTING_ENTRY_TEMPLATE.format(
+                adapter_imports="\n".join(imports),
+                adapter_registers="\n".join(registers),
+            ),
+            encoding="utf-8",
+        )
+        if log:
+            log("未检测到 bot.py，已根据 pyproject.toml 自动生成标准入口")
+        return True
 
     # ---------- 配置 ----------
     def read_env(self, bot: Bot) -> str:
