@@ -22,6 +22,9 @@
         <template #default="{ row }">
           <b>{{ row.display_name || row.name }}</b>
           <el-tag v-if="row.kind === 'package'" size="small" type="info" effect="plain" style="margin-left: 8px">包</el-tag>
+          <el-tag v-if="row.is_visual" size="small" type="warning" effect="plain" round style="margin-left: 8px">
+            可视化
+          </el-tag>
         </template>
       </el-table-column>
       <el-table-column label="描述" min-width="220" show-overflow-tooltip>

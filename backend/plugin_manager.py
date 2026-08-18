@@ -46,6 +46,7 @@ class PluginInfo:
         return {
             "name": self.name,
             "display_name": self.display_name or self.name,
+            "is_visual": self.name.startswith("vplugin_"),
             "path": self.path,
             "kind": self.kind,
             "disabled": self.disabled,
