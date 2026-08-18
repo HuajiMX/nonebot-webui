@@ -35,21 +35,44 @@
       </div>
     </div>
 
-    <div class="card">
-      <h3 class="block-title">版本更新</h3>
-      <div class="kv" style="max-width: 420px">
-        <div class="kv-row"><span>当前版本</span><b>v{{ updateStore.current || "-" }}</b></div>
-        <div class="kv-row">
-          <span>最新版本</span>
-          <b>{{ updateStore.checking ? "检查中…" : (updateStore.latest ? `v${updateStore.latest}` : "-") }}</b>
+    <div class="card update-card">
+      <h3 class="block-title update-title">
+        <span>版本更新</span>
+        <el-tag
+          v-if="updateStore.latest && !updateStore.checking"
+          :type="updateStore.hasUpdate ? 'danger' : 'success'"
+          size="small"
+          effect="light"
+          round
+        >
+          {{ updateStore.hasUpdate ? `发现新版本 v${updateStore.latest}` : "已是最新版本" }}
+        </el-tag>
+      </h3>
+
+      <div class="version-row">
+        <div class="version-item">
+          <span class="version-label">当前版本</span>
+          <span class="version-value">v{{ updateStore.current || "-" }}</span>
         </div>
-        <div v-if="updateStore.hasUpdate && updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
-        <div v-if="updateStore.latest && !updateStore.hasUpdate" class="update-hint">当前已是最新版本</div>
+        <el-icon class="version-arrow"><ArrowRight /></el-icon>
+        <div class="version-item">
+          <span class="version-label">最新版本</span>
+          <span class="version-value" :class="{ newest: updateStore.hasUpdate }">
+            {{ updateStore.checking ? "检查中…" : (updateStore.latest ? `v${updateStore.latest}` : "-") }}
+          </span>
+        </div>
       </div>
+
+      <div v-if="updateStore.hasUpdate && updateStore.notes" class="update-notes">{{ updateStore.notes }}</div>
+
       <div class="update-actions">
-        <el-button :loading="updateStore.checking" @click="checkUpdate">检测更新</el-button>
+        <el-button :loading="updateStore.checking" @click="checkUpdate">
+          <el-icon v-if="!updateStore.checking"><Refresh /></el-icon>
+          <span>检测更新</span>
+        </el-button>
         <el-button v-if="updateStore.hasUpdate" type="primary" :loading="updating" @click="startUpdate">
-          立即更新
+          <el-icon v-if="!updating"><Download /></el-icon>
+          <span>立即更新</span>
         </el-button>
       </div>
     </div>
@@ -178,6 +201,49 @@ onMounted(async () => {
   font-size: 16px;
 }
 
+.update-title {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 14px;
+}
+
+.version-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  background: var(--nb-gray);
+  border-radius: 10px;
+}
+
+.version-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 130px;
+}
+
+.version-label {
+  font-size: 12px;
+  color: var(--nb-text-secondary);
+}
+
+.version-value {
+  font-size: 20px;
+  font-weight: 600;
+  color: var(--nb-text);
+}
+
+.version-value.newest {
+  color: var(--nb-orange);
+}
+
+.version-arrow {
+  color: #c0c4cc;
+  font-size: 16px;
+}
+
 .kv-row {
   display: flex;
   justify-content: space-between;
@@ -203,19 +269,26 @@ onMounted(async () => {
   gap: 10px;
 }
 
-.update-notes {
-  margin-top: 10px;
-  font-size: 12.5px;
-  color: var(--nb-text-secondary);
-  white-space: pre-line;
-  max-height: 80px;
-  overflow: auto;
+.update-actions .el-button + .el-button {
+  margin-left: 0;
 }
 
-.update-hint {
-  margin-top: 10px;
+.update-notes {
+  margin-top: 12px;
+  padding: 10px 12px 10px 14px;
+  background: #fafafa;
+  border-left: 3px solid var(--nb-orange);
+  border-radius: 0 8px 8px 0;
   font-size: 12.5px;
-  color: #67c23a;
+  color: var(--nb-text);
+  white-space: pre-line;
+  max-height: 96px;
+  overflow: auto;
+  line-height: 1.6;
+}
+
+.card + .card {
+  margin-top: 16px;
 }
 
 .ellipsis {
