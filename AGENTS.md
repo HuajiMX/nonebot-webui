@@ -140,4 +140,5 @@ cd frontend; npm install; npm run build
 - `npm`、`pip`、`git` 写操作、联网、启停服务等命令通常需要提权（escalation）。
 - 涉及用户真实数据（`data/`、`E:\Bot\...` 机器人目录）的操作先确认，不擅自删除。
 - 修改功能后保持 README 与行为同步；新增/删除组件时同步 `NODE_CATALOG` 与生成逻辑。
+- 提交信息遵循 Conventional Commits：格式 `<type>(<scope>): <subject>`，例如 `fix(editor): ...`、`feat(bots): ...`；type 常用 `feat` / `fix` / `docs` / `refactor` / `chore` / `test` / `build` / `perf`，scope 为可选的改动模块。
 - 版本发布走「改 `__version__` → tag → push」，不要在代码里写死本机绝对路径（启动脚本用 `%~dp0` 等可移植写法）。
