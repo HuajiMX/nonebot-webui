@@ -57,6 +57,7 @@
               </el-form-item>
               <el-form-item label="自动启动">
                 <el-switch v-model="editForm.auto_start" />
+                <div class="muted auto-start-hint">勾选后，WebUI 每次启动都会自动拉起该机器人</div>
               </el-form-item>
               <el-form-item>
                 <el-button type="primary" :loading="saving" @click="saveEdit">保存修改</el-button>
@@ -282,6 +283,12 @@ onBeforeUnmount(() => {
 .detail-actions {
   display: flex;
   gap: 10px;
+}
+
+.auto-start-hint {
+  flex-basis: 100%;
+  margin-left: 0;
+  margin-top: 4px;
 }
 
 .overview-grid {

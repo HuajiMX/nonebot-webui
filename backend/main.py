@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import signal
 from contextlib import asynccontextmanager
@@ -18,6 +19,8 @@ from .config import FRONTEND_DIST, ensure_data_dir
 from .process_manager import process_manager
 from .routers import auth, bots, logs, monitor, plugins, terminal, update, visual_plugins
 from .terminal import terminal_manager
+
+logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -36,6 +39,14 @@ async def lifespan(app: FastAPI):
         bot.status = "stopped"
         bot.pid = None
         bot_manager.update_bot(bot)
+    # 自动启动标记了 auto_start 的机器人（WebUI 每次启动时自动拉起）
+    for bot in bot_manager.list_bots():
+        if bot.auto_start:
+            try:
+                process_manager.start(bot.id)
+                logger.info("已自动启动机器人：%s", bot.name)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("自动启动机器人「%s」失败：%s", bot.name, exc)
     yield
     process_manager.shutdown_all()
     terminal_manager.close_all()
