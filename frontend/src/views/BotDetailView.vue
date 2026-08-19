@@ -295,7 +295,6 @@ onBeforeUnmount(() => {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 16px;
-  align-items: start;
 }
 
 @media (max-width: 1100px) {
