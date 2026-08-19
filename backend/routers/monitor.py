@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
 
-from ..deps import ws_auth
+from ..deps import current_user, ws_auth
 from ..monitor import snapshot
 
 
@@ -14,7 +14,7 @@ router = APIRouter(prefix="/api/monitor", tags=["monitor"])
 
 
 @router.get("")
-def get_snapshot() -> dict:
+def get_snapshot(_: str = Depends(current_user)) -> dict:
     return snapshot()
 
 

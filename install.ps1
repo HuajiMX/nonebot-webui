@@ -46,7 +46,15 @@ Write-Host "下载发布包：$Url"
 Invoke-WebRequest -Uri $Url -OutFile $tmpZip
 
 # 4. 解压到安装目录
-if (Test-Path $InstallDir) { Remove-Item -Recurse -Force $InstallDir }
+if (Test-Path $InstallDir) {
+    $looksLikeInstall = (Test-Path (Join-Path $InstallDir "install.py")) -or (Test-Path (Join-Path $InstallDir "start.py")) -or (Test-Path (Join-Path $InstallDir "backend"))
+    if (-not $looksLikeInstall) {
+        Write-Host "[错误] 目标目录已存在且不是 nonebot-webui 安装目录，为避免误删数据已中止：$InstallDir"
+        Write-Host "请指定新的安装目录：.\install.ps1 -InstallDir <新目录>"
+        exit 1
+    }
+    Remove-Item -Recurse -Force $InstallDir
+}
 New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
 Write-Host "解压到：$InstallDir"
 Expand-Archive -Path $tmpZip -DestinationPath $InstallDir -Force

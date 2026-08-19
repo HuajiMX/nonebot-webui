@@ -45,8 +45,15 @@ jobs:
           (cd pkg && zip -r ../nonebot-webui.zip .)
           unzip -l nonebot-webui.zip | head -30
 
+      - name: Generate checksum
+        run: |
+          sha256sum nonebot-webui.zip > nonebot-webui.zip.sha256
+          cat nonebot-webui.zip.sha256
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
-          files: nonebot-webui.zip
+          files: |
+            nonebot-webui.zip
+            nonebot-webui.zip.sha256
           generate_release_notes: true

@@ -19,6 +19,8 @@ from .bot_manager import bot_manager
 
 
 PLUGIN_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+MAX_PLUGIN_ZIP_ENTRIES = 5000
+MAX_PLUGIN_ZIP_TOTAL = 300 * 1024 * 1024  # 解压后总大小上限 300MB
 
 
 class PluginInfo:
@@ -329,10 +331,18 @@ def install_plugin_zip(
 
 
 def _safe_extract(zf: zipfile.ZipFile, target: Path) -> None:
-    """安全解压，防止路径穿越。"""
-    for member in zf.infolist():
+    """安全解压，防止路径穿越与 zip 炸弹。"""
+    target_root = target.resolve()
+    entries = zf.infolist()
+    if len(entries) > MAX_PLUGIN_ZIP_ENTRIES:
+        raise ValueError("压缩包条目过多")
+    total = 0
+    for member in entries:
+        total += member.file_size
+        if total > MAX_PLUGIN_ZIP_TOTAL:
+            raise ValueError("压缩包解压后总大小超过上限（300MB）")
         dest = (target / member.filename).resolve()
-        if not str(dest).startswith(str(target.resolve())):
+        if not dest.is_relative_to(target_root):
             raise ValueError(f"压缩包包含非法路径：{member.filename}")
     zf.extractall(target)
 

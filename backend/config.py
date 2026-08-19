@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -28,3 +29,13 @@ DEFAULT_PLUGIN_DIR = "src/plugins"
 def ensure_data_dir() -> None:
     """确保数据目录存在。"""
     DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def get_config() -> dict:
+    """读取 data/config.json（不存在或损坏时返回空字典）。"""
+    try:
+        if CONFIG_FILE.exists():
+            return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        pass
+    return {}

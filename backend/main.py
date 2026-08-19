@@ -7,11 +7,14 @@ import logging
 import os
 import signal
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
+
+import psutil
 
 from . import __version__
 from .bot_manager import bot_manager
@@ -23,6 +26,25 @@ from .terminal import terminal_manager
 logger = logging.getLogger(__name__)
 
 
+def _is_managed_bot_process(pid: int, bot_dir: str) -> bool:
+    """校验 PID 是否确为 WebUI 托管的机器人进程，避免 PID 复用误杀无关进程。"""
+    try:
+        proc = psutil.Process(pid)
+        cmdline = proc.cmdline() or []
+        if len(cmdline) < 2 or "bot.py" not in cmdline:
+            return False
+        try:
+            return (
+                str(proc.cwd()).lower()
+                == str(Path(bot_dir).resolve()).lower()
+            )
+        except (psutil.AccessDenied, OSError):
+            # 无法读取工作目录时，退化为仅校验命令行（机器人均由 WebUI 以 bot.py 拉起）
+            return True
+    except (psutil.NoSuchProcess, psutil.AccessDenied, OSError):
+        return False
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     ensure_data_dir()
@@ -32,10 +54,11 @@ async def lifespan(app: FastAPI):
     # 清理上次服务退出后残留的机器人子进程，避免孤儿进程占用端口
     for bot in bot_manager.list_bots():
         if bot.status in ("running", "starting", "stopping") and bot.pid:
-            try:
-                os.kill(bot.pid, signal.SIGTERM)
-            except OSError:
-                pass
+            if _is_managed_bot_process(bot.pid, bot.directory):
+                try:
+                    os.kill(bot.pid, signal.SIGTERM)
+                except OSError:
+                    pass
         bot.status = "stopped"
         bot.pid = None
         bot_manager.update_bot(bot)
@@ -60,7 +83,14 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    # 前端与 API 同源部署，跨源仅需覆盖本地开发/反代场景；
+    # 不再使用通配符 + 凭据的组合，避免任意站点反射读取响应
+    allow_origins=[
+        "http://127.0.0.1",
+        "http://localhost",
+        "http://127.0.0.1:9527",
+        "http://localhost:9527",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -83,11 +113,13 @@ def health() -> dict:
 
 # 前端静态资源（构建后）
 if FRONTEND_DIST.exists():
-    app.mount(
-        "/assets",
-        StaticFiles(directory=FRONTEND_DIST / "assets"),
-        name="assets",
-    )
+    assets_dir = FRONTEND_DIST / "assets"
+    if assets_dir.exists():
+        app.mount(
+            "/assets",
+            StaticFiles(directory=assets_dir),
+            name="assets",
+        )
 
     @app.get("/{full_path:path}")
     def spa(full_path: str):

@@ -172,6 +172,47 @@ MESSAGE_TYPES = {
     "video": "视频",
 }
 
+# 生成代码中作为标识符使用的字段必须匹配该正则，防止流程数据注入任意 Python
+IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _require_ident(cfg: dict, key: str, node_id: str, default: str) -> str:
+    """校验配置字段必须是合法 Python 标识符，返回规范化后的值。"""
+    value = str(cfg.get(key) or "").strip() or default
+    if not IDENT_RE.match(value):
+        raise ValueError(f"节点 {node_id} 的「变量名」必须是合法 Python 变量名")
+    return value
+
+
+def _validate_node_config(ntype: str, cfg: dict, node_id: str) -> None:
+    """按节点类型校验配置内容，防止生成代码注入与非法配置。"""
+    if ntype == "loop":
+        _require_ident(cfg, "var", node_id, "item")
+    elif ntype == "collect":
+        _require_ident(cfg, "key", node_id, "reply")
+    elif ntype in ("api", "choice"):
+        _require_ident(cfg, "var", node_id, "api_resp" if ntype == "api" else "choice")
+    elif ntype == "listener_webhook":
+        _require_ident(cfg, "var", node_id, "webhook")
+        path = str(cfg.get("path") or "").strip()
+        if path and not path.startswith("/"):
+            raise ValueError(f"节点 {node_id} 的 WebHook 路径必须以 / 开头")
+    elif ntype in ("listener_group", "listener_private"):
+        field = "groups" if ntype == "listener_group" else "users"
+        value = str(cfg.get(field) or "all").strip() or "all"
+        if value != "all":
+            parts = [x.strip() for x in value.split(",") if x.strip()]
+            if not parts or any(not x.isdigit() for x in parts):
+                raise ValueError(
+                    f"节点 {node_id} 的「{'群号' if ntype == 'listener_group' else 'QQ 号'}」"
+                    "必须是逗号分隔的数字或 all"
+                )
+        keywords = cfg.get("keywords") or ""
+        if isinstance(keywords, str):
+            for kw in keywords.split(","):
+                if len(kw.strip()) > 200:
+                    raise ValueError(f"节点 {node_id} 的触发关键词过长（单个不超过 200 字符）")
+
 
 # ---------------------------------------------------------------------------
 # 流程校验与迁移
@@ -191,6 +232,10 @@ def _validate_flow(flow: dict, require_entry: bool = True) -> None:
         ids.add(n["id"])
         if n["type"] not in NODE_CATALOG:
             raise ValueError(f"未知节点类型：{n['type']}")
+        cfg = n.get("config")
+        if not isinstance(cfg, dict):
+            raise ValueError(f"节点 {n['id']} 配置格式错误")
+        _validate_node_config(n["type"], cfg, n["id"])
     for e in edges:
         if e.get("from") not in ids or e.get("to") not in ids:
             raise ValueError("连线引用了不存在的节点")
@@ -382,9 +427,9 @@ try:
 except Exception:  # noqa: BLE001
     psutil = None
 
-PLUGIN_NAME = "%%PLUGIN_NAME%%"
-PLUGIN_MODULE = "%%PLUGIN_MODULE%%"
-BOT_NAME = "%%BOT_NAME%%"
+PLUGIN_NAME = %%PLUGIN_NAME%%
+PLUGIN_MODULE = %%PLUGIN_MODULE%%
+BOT_NAME = %%BOT_NAME%%
 
 _sessions: Dict[str, dict] = {}
 _pending: Dict[str, dict] = {}
@@ -1179,9 +1224,13 @@ def generate_code(plugin: VisualPlugin, bot_name: str = "") -> str:
     flow = _migrate_flow(plugin.flow)
     _validate_flow(flow, require_entry=True)
     code = (
-        _RUNTIME_TEMPLATE.replace("%%PLUGIN_NAME%%", plugin.name)
-        .replace("%%PLUGIN_MODULE%%", plugin.module)
-        .replace("%%BOT_NAME%%", bot_name)
+        _RUNTIME_TEMPLATE.replace(
+            "%%PLUGIN_NAME%%", json.dumps(plugin.name, ensure_ascii=True)
+        )
+        .replace(
+            "%%PLUGIN_MODULE%%", json.dumps(plugin.module, ensure_ascii=True)
+        )
+        .replace("%%BOT_NAME%%", json.dumps(bot_name, ensure_ascii=True))
     )
     step_parts = [
         _emit_step(node, flow)

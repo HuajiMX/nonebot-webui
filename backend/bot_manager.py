@@ -263,6 +263,8 @@ class BotManager:
 
     def __init__(self) -> None:
         self._bots: Dict[str, Bot] = {}
+        # 已删除但仍可能在后台创建线程中运行的机器人 id
+        self._cancelled: set[str] = set()
         self._lock = threading.RLock()
         self.load()
 
@@ -296,7 +298,22 @@ class BotManager:
     def remove_bot(self, bot_id: str) -> None:
         with self._lock:
             self._bots.pop(bot_id, None)
+            self._cancelled.add(bot_id)
             self.save()
+
+    def _is_cancelled(self, bot_id: str) -> bool:
+        with self._lock:
+            return bot_id in self._cancelled
+
+    def _update_worker_bot(self, bot: Bot) -> bool:
+        """创建线程中更新机器人状态；机器人已被删除则不再写回 registry。"""
+        with self._lock:
+            if bot.id in self._cancelled:
+                return False
+            bot.updated_at = _now()
+            self._bots[bot.id] = bot
+            self.save()
+            return True
 
     # ---------- 创建 ----------
     def create_bot(
@@ -359,7 +376,8 @@ class BotManager:
                 bot.python = self._resolve_python(bot_dir, bot.python)
                 bot.status = "stopped"
                 bot.managed = False
-                self.update_bot(bot)
+                if not self._update_worker_bot(bot):
+                    return
                 log("已注册现有项目")
                 try:
                     self.ensure_bot_entry(bot, log)
@@ -372,6 +390,8 @@ class BotManager:
             if not bot_dir.exists():
                 bot_dir.mkdir(parents=True, exist_ok=True)
                 log(f"创建目录：{bot_dir}")
+            if self._is_cancelled(bot.id):
+                return
 
             # 1. 创建虚拟环境
             base_python = data.python.strip() or sys.executable
@@ -389,6 +409,8 @@ class BotManager:
             if proc.returncode != 0:
                 raise RuntimeError(f"创建虚拟环境失败：\n{proc.stderr[-2000:]}")
             log("虚拟环境创建完成")
+            if self._is_cancelled(bot.id):
+                return
 
             venv_python = self._venv_python(venv_dir)
             bot.venv = str(venv_dir)
@@ -441,19 +463,23 @@ class BotManager:
                 "[]", encoding="utf-8"
             )
             log("已生成 bot.py / pyproject.toml / .env / 插件目录")
+            if self._is_cancelled(bot.id):
+                return
 
             # 3. 安装依赖
             log(f"安装依赖：{' '.join(packages)}")
             self._run_pip(venv_python, packages, log)
             log("依赖安装完成")
+            if self._is_cancelled(bot.id):
+                return
 
             bot.status = "stopped"
-            self.update_bot(bot)
+            self._update_worker_bot(bot)
             log("机器人创建完成")
         except Exception as exc:  # noqa: BLE001
             bot.status = "error"
             bot.extra["error"] = str(exc)
-            self.update_bot(bot)
+            self._update_worker_bot(bot)
             log(f"创建失败：{exc}")
 
     def _run_pip(

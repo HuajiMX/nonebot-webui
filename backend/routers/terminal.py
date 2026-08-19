@@ -42,8 +42,14 @@ async def terminal_ws(websocket: WebSocket) -> None:
             return
     # custom：使用 query command
 
-    rows = int(websocket.query_params.get("rows", "24"))
-    cols = int(websocket.query_params.get("cols", "80"))
+    def _dim(value: str, default: int) -> int:
+        try:
+            return max(2, min(200, int(value)))
+        except (TypeError, ValueError):
+            return default
+
+    rows = _dim(websocket.query_params.get("rows", "24"), 24)
+    cols = _dim(websocket.query_params.get("cols", "80"), 80)
 
     session = terminal_manager.create(command=command, cwd=cwd, rows=rows, cols=cols)
     queue = session.attach(websocket.app.state.loop)
@@ -70,7 +76,13 @@ async def terminal_ws(websocket: WebSocket) -> None:
             if mtype == "input":
                 session.write(msg.get("data", ""))
             elif mtype == "resize":
-                session.resize(int(msg.get("rows", 24)), int(msg.get("cols", 80)))
+                try:
+                    session.resize(
+                        max(2, min(200, int(msg.get("rows", 24)))),
+                        max(2, min(200, int(msg.get("cols", 80)))),
+                    )
+                except (TypeError, ValueError):
+                    pass
             elif mtype == "ping":
                 await websocket.send_json({"type": "pong"})
     except WebSocketDisconnect:

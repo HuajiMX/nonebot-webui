@@ -13,6 +13,7 @@ import argparse
 import hashlib
 import io
 import os
+import re
 import shutil
 import signal
 import socket
@@ -28,6 +29,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 DATA_DIR = ROOT / "data"
 LOG_FILE = DATA_DIR / "update.log"
+MAX_PACKAGE_BYTES = 512 * 1024 * 1024  # 发布包大小上限 512MB
+# 本地生成物/用户数据，发布包一律不得包含，覆盖时也必须跳过
+PROTECTED_ENTRIES = {"data", ".venv", "启动WebUI.bat"}
 
 
 def log(msg: str) -> None:
@@ -120,8 +124,41 @@ def download(url: str, dest: Path) -> None:
     log(f"下载发布包：{url}")
     req = urllib.request.Request(url, headers={"User-Agent": "nonebot-webui-updater"})
     with urllib.request.urlopen(req, timeout=60) as resp, open(dest, "wb") as fh:
-        shutil.copyfileobj(resp, fh)
+        total = 0
+        while True:
+            chunk = resp.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_PACKAGE_BYTES:
+                raise RuntimeError(
+                    f"发布包超过大小上限（{MAX_PACKAGE_BYTES // (1024 * 1024)}MB），已中止"
+                )
+            fh.write(chunk)
     log(f"下载完成：{dest.stat().st_size} 字节")
+
+
+def verify_checksum(url: str, path: Path) -> None:
+    """尝试下载发布包同名的 .sha256 文件并校验；无 sidecar 时仅提示（兼容自定义源）。"""
+    sidecar = url + ".sha256"
+    try:
+        req = urllib.request.Request(
+            sidecar, headers={"User-Agent": "nonebot-webui-updater"}
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            content = resp.read(4096).decode("utf-8", errors="replace").strip()
+    except Exception as exc:  # noqa: BLE001
+        log(f"未找到校验文件 {sidecar}（{exc}），跳过校验")
+        return
+    expected = content.split()[0].strip().lower() if content else ""
+    if not re.fullmatch(r"[0-9a-f]{64}", expected):
+        raise RuntimeError("校验文件格式无效，已中止更新")
+    actual = sha256(path)
+    if actual != expected:
+        raise RuntimeError(
+            f"发布包 SHA-256 校验失败（期望 {expected}，实际 {actual}），已中止更新"
+        )
+    log("发布包 SHA-256 校验通过")
 
 
 def extract(zip_path: Path, dest: Path) -> None:
@@ -152,13 +189,24 @@ def apply_update(zip_path: Path) -> None:
         extract(zip_path, tmp_path)
         verify_package(tmp_path)
 
+        # 防御性检查：发布包不得包含本地生成物/用户数据，否则拒绝更新
+        protected_hit = [
+            str(p) for p in tmp_path.iterdir() if p.name in PROTECTED_ENTRIES
+        ]
+        if protected_hit:
+            raise RuntimeError(
+                f"发布包包含受保护条目（{protected_hit}），已拒绝更新"
+            )
+
         req_old = ROOT / "requirements.txt"
         req_new = tmp_path / "requirements.txt"
         old_hash = sha256(req_old) if req_old.exists() else ""
         new_hash = sha256(req_new) if req_new.exists() else ""
 
-        # 覆盖代码（data/ 与 .venv 不在发布包内，天然保留）
+        # 覆盖代码（显式跳过受保护条目，双保险）
         for entry in tmp_path.iterdir():
+            if entry.name in PROTECTED_ENTRIES:
+                continue
             target = ROOT / entry.name
             if entry.is_dir():
                 if target.exists():
@@ -234,6 +282,7 @@ def main() -> int:
 
         # 先下载（此时旧服务仍在运行，前端可实时看到进度），再停服替换
         download(args.url, tmp_zip)
+        verify_checksum(args.url, tmp_zip)
         stop_server(args.port, args.pid or None)
         time.sleep(2)
 

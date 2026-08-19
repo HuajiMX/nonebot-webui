@@ -20,6 +20,14 @@ _session_lock = threading.Lock()
 # token -> {username, expires_at}
 _sessions: Dict[str, dict] = {}
 
+_login_lock = threading.Lock()
+# key -> [失败时间戳]，用于登录/初始化限流
+_login_failures: Dict[str, list[float]] = {}
+_LOGIN_MAX_ATTEMPTS = 5
+_LOGIN_WINDOW = 15 * 60
+
+_setup_lock = threading.Lock()
+
 
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -121,3 +129,36 @@ def destroy_user_sessions(username: str) -> None:
 
 def has_users() -> bool:
     return bool(get_users())
+
+
+def setup_initial_user(username: str, password: str) -> User:
+    """首次初始化管理员（原子操作），并发请求时仅第一个成功。"""
+    with _setup_lock:
+        if get_users():
+            raise ValueError("系统已初始化，不能重复设置")
+        return create_user(username, password)
+
+
+def _prune_login_failures(key: str) -> None:
+    now = time.time()
+    _login_failures[key] = [
+        t for t in _login_failures.get(key, []) if now - t < _LOGIN_WINDOW
+    ]
+
+
+def is_login_blocked(key: str) -> bool:
+    """滑动窗口内失败次数达到上限则返回 True。"""
+    with _login_lock:
+        _prune_login_failures(key)
+        return len(_login_failures.get(key, ())) >= _LOGIN_MAX_ATTEMPTS
+
+
+def record_login_failure(key: str) -> None:
+    with _login_lock:
+        _prune_login_failures(key)
+        _login_failures.setdefault(key, []).append(time.time())
+
+
+def clear_login_failures(key: str) -> None:
+    with _login_lock:
+        _login_failures.pop(key, None)

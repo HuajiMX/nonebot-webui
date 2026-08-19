@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, Depends, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
 
 from ..bot_manager import bot_manager
 from ..deps import current_user, ws_auth
@@ -18,7 +18,7 @@ router = APIRouter(prefix="/api/bots", tags=["logs"])
 def get_log(bot_id: str, _: str = Depends(current_user)) -> dict:
     bot = bot_manager.get_bot(bot_id)
     if bot is None:
-        return {"lines": []}
+        raise HTTPException(status_code=404, detail="机器人不存在")
     return {"lines": process_manager.recent_logs(bot_id), "running": process_manager.is_running(bot_id)}
 
 

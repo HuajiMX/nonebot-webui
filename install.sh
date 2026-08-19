@@ -43,7 +43,15 @@ echo "下载发布包：$URL"
 curl -fsSL "$URL" -o "$TMP_ZIP"
 
 # 4. 解压到安装目录
-rm -rf "$INSTALL_DIR"
+if [ -d "$INSTALL_DIR" ]; then
+    if [ -f "$INSTALL_DIR/install.py" ] || [ -f "$INSTALL_DIR/start.py" ] || [ -d "$INSTALL_DIR/backend" ]; then
+        rm -rf "$INSTALL_DIR"
+    else
+        echo "[错误] 目标目录已存在且不是 nonebot-webui 安装目录，为避免误删数据已中止：$INSTALL_DIR"
+        echo "请指定新的安装目录：INSTALL_DIR=/path bash install.sh"
+        exit 1
+    fi
+fi
 mkdir -p "$INSTALL_DIR"
 echo "解压到：$INSTALL_DIR"
 unzip -q -o "$TMP_ZIP" -d "$INSTALL_DIR"

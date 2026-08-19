@@ -89,6 +89,49 @@ class BotUpdate(BaseModel):
     plugin_dir: Optional[str] = None
     adapter: Optional[str] = None
 
+    @field_validator("name")
+    @classmethod
+    def _check_name(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("机器人名称不能为空")
+        if not NAME_RE.match(v):
+            raise ValueError("名称仅支持字母、数字、下划线、中划线、中文")
+        if len(v) > 64:
+            raise ValueError("名称过长")
+        return v
+
+    @field_validator("host")
+    @classmethod
+    def _check_host(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip()
+        if not v:
+            raise ValueError("监听地址不能为空")
+        return v
+
+    @field_validator("port")
+    @classmethod
+    def _check_port(cls, v: Optional[int]) -> Optional[int]:
+        if v is None:
+            return v
+        if not (1 <= v <= 65535):
+            raise ValueError("端口范围应为 1-65535")
+        return v
+
+    @field_validator("plugin_dir")
+    @classmethod
+    def _check_plugin_dir(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return v
+        v = v.strip().strip('"').strip("'")
+        if not v:
+            raise ValueError("插件目录不能为空")
+        return v
+
 
 class LoginRequest(BaseModel):
     username: str
