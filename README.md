@@ -22,10 +22,15 @@ NoneBot2 WebUI 是一个本地网页管理面板，为 [NoneBot2](https://nonebo
 - 一键启动、停止、重启，机器人运行状态一目了然
 - 实时运行日志，自动滚动，错误高亮
 
+![机器人管理列表](docs/screenshots/bots.png)
+![机器人详情](docs/screenshots/bot-info.png)
+
 ### 🧩 插件管理
 
 - 上传 `.py` 文件或 `.zip` 插件包即可安装，依赖自动处理
 - 随时启用或暂停插件，立即生效
+
+![机器人插件管理](docs/screenshots/bot-plugins.png)
 
 ### 🎨 可视化插件编写
 
@@ -36,15 +41,21 @@ NoneBot2 WebUI 是一个本地网页管理面板，为 [NoneBot2](https://nonebo
 - 支持多轮对话：信息收集、选项交互，会话数据自动记录
 - 一键生成插件并装配到机器人；改完点「更新插件」，即时生效
 
+![可视化插件编辑器](docs/screenshots/visual-plugin.png)
+
 ### 🖥️ 内置终端
 
 - 网页内直接操作机器人环境
 - 可配置并打开协议端（如 NapCat）的终端，调试更方便
 
+![机器人终端](docs/screenshots/bot-terminal.png)
+
 ### 📊 服务器监控
 
 - CPU、内存、磁盘、网络实时图表
 - 机器人运行概况与进程情况尽在掌握
+
+![服务器监控](docs/screenshots/dashboard.png)
 
 ### 🔒 账号安全
 
