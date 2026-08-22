@@ -159,6 +159,11 @@ class ProcessManager:
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
         creationflags = CREATE_NO_WINDOW
+        popen_kwargs: dict = {}
+        if os.name != "nt":
+            # Linux/macOS：让机器人拥有独立进程组，停止/重启时 killpg
+            # 只波及机器人自身，不会把同组的 WebUI 一起 SIGTERM 掉
+            popen_kwargs["start_new_session"] = True
         try:
             proc = subprocess.Popen(
                 [python, "bot.py"],
@@ -171,6 +176,7 @@ class ProcessManager:
                 errors="replace",
                 bufsize=1,
                 creationflags=creationflags,
+                **popen_kwargs,
             )
         except Exception as exc:  # noqa: BLE001
             bot.status = "error"
@@ -223,7 +229,13 @@ class ProcessManager:
                 bp.proc.terminate()
             else:
                 try:
-                    os.killpg(os.getpgid(bp.proc.pid), signal.SIGTERM)
+                    pgid = os.getpgid(bp.proc.pid)
+                    if pgid != os.getpgid(0):
+                        os.killpg(pgid, signal.SIGTERM)
+                    else:
+                        # 防御：机器人仍与 WebUI 同进程组时（旧数据/历史进程），
+                        # killpg 会误杀 WebUI 自身，退回只终止目标进程
+                        bp.proc.terminate()
                 except (ProcessLookupError, PermissionError):
                     bp.proc.terminate()
         except OSError:
