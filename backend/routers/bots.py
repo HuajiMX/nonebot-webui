@@ -85,6 +85,7 @@ def get_bot(bot_id: str, _: str = Depends(current_user)) -> dict:
 def update_bot(bot_id: str, data: BotUpdate, _: str = Depends(current_user)) -> dict:
     bot = _get_bot_or_404(bot_id)
     changed = data.model_dump(exclude_unset=True)
+    host_port_changed = "host" in changed or "port" in changed
     if "name" in changed:
         name = (changed["name"] or "").strip()
         if not name:
@@ -99,6 +100,11 @@ def update_bot(bot_id: str, data: BotUpdate, _: str = Depends(current_user)) -> 
         if changed["adapter"] not in ADAPTERS:
             raise HTTPException(status_code=400, detail="不支持的适配器")
         bot.adapter = changed["adapter"]
+    if host_port_changed:
+        try:
+            bot_manager.sync_env_host_port(bot)
+        except OSError as exc:
+            raise HTTPException(status_code=500, detail=f"写入 .env 失败：{exc}") from exc
     bot_manager.update_bot(bot)
     return bot.model_dump()
 

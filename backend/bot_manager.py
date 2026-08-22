@@ -668,6 +668,60 @@ class BotManager:
             return env_file.read_text(encoding="utf-8")
         return ""
 
+    def sync_env_host_port(self, bot: Bot) -> None:
+        """把 WebUI 记录的监听地址/端口同步到机器人的 .env（保留其它配置）。
+
+        概览页修改 host/port 后调用，保证实际启动的 NoneBot 进程使用新端口；
+        .env 不存在时按创建脚手架的模板生成，已有 HOST/PORT 时只替换对应行。
+        """
+        env_file = Path(bot.directory) / ".env"
+        if not env_file.parent.exists():
+            # 机器人目录已被删除时无法写 .env，跳过（机器人本身已不可用）
+            return
+        exists = env_file.exists()
+        lines = (
+            # utf-8-sig 兼容 Windows 记事本/PowerShell 生成的带 BOM .env
+            env_file.read_text(encoding="utf-8-sig").splitlines()
+            if exists
+            else ENV_TEMPLATE.format(host=bot.host, port=bot.port).splitlines()
+        )
+
+        def _env_values(src: list[str]) -> dict[str, str]:
+            values: dict[str, str] = {}
+            for line in src:
+                if "=" not in line:
+                    continue
+                key, _, value = line.partition("=")
+                key = key.strip().upper()
+                if key in ("HOST", "PORT"):
+                    values[key] = value.strip()
+            return values
+
+        if exists and _env_values(lines).get("HOST") == str(
+            bot.host
+        ) and _env_values(lines).get("PORT") == str(bot.port):
+            return
+
+        out: list[str] = []
+        host_set = port_set = False
+        for line in lines:
+            key = line.partition("=")[0].strip().upper() if "=" in line else ""
+            if not host_set and key == "HOST":
+                out.append(f"HOST={bot.host}")
+                host_set = True
+                continue
+            if not port_set and key == "PORT":
+                out.append(f"PORT={bot.port}")
+                port_set = True
+                continue
+            out.append(line)
+        if not host_set:
+            out.append(f"HOST={bot.host}")
+        if not port_set:
+            out.append(f"PORT={bot.port}")
+        env_file.parent.mkdir(parents=True, exist_ok=True)
+        env_file.write_text("\n".join(out) + "\n", encoding="utf-8")
+
     def write_env(self, bot: Bot, content: str) -> None:
         env_file = Path(bot.directory) / ".env"
         env_file.write_text(content, encoding="utf-8")
