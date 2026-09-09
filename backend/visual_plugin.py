@@ -99,6 +99,16 @@ NODE_CATALOG = {
             "timeout": 10,
         },
     },
+    "send_email": {
+        "category": "feature",
+        "label": "发送邮件",
+        "default": {
+            "to": "",  # 留空=使用 WebUI 系统通知收件邮箱，多个用逗号分隔
+            "subject": "来自 {{bot_name}} 的通知",
+            "body": "",
+            "html": False,
+        },
+    },
     "code": {
         "category": "basic",
         "label": "自定义代码",
@@ -405,8 +415,12 @@ import datetime
 import json
 import os
 import re
+import smtplib
+import ssl
 import subprocess
 import time
+from email.message import EmailMessage
+from email.utils import formataddr
 from typing import Any, Dict, Optional
 
 import httpx
@@ -430,6 +444,7 @@ except Exception:  # noqa: BLE001
 PLUGIN_NAME = %%PLUGIN_NAME%%
 PLUGIN_MODULE = %%PLUGIN_MODULE%%
 BOT_NAME = %%BOT_NAME%%
+_EMAIL_CONFIG_PATH = %%EMAIL_CONFIG_PATH%%
 
 _sessions: Dict[str, dict] = {}
 _pending: Dict[str, dict] = {}
@@ -598,6 +613,105 @@ def _gpu_info() -> dict:
     except Exception:  # noqa: BLE001
         pass
     return {}
+
+
+def _load_email_config() -> dict:
+    """读取 WebUI 的邮件配置：环境变量指定的路径优先，其次生成时嵌入的路径。"""
+    path = os.environ.get("NB_WEBUI_EMAIL_CONFIG") or _EMAIL_CONFIG_PATH
+    if not path:
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except Exception:  # noqa: BLE001
+        return {}
+
+
+def _email_recipients(raw: Any, cfg: dict) -> list:
+    """解析收件人：节点配置优先，为空时回退到 WebUI 系统通知收件邮箱。"""
+    items: list = []
+    if isinstance(raw, str):
+        items = [x.strip() for x in re.split(r"[,;\\s]+", raw) if x.strip()]
+    elif isinstance(raw, (list, tuple)):
+        for x in raw:
+            items.extend(y.strip() for y in re.split(r"[,;\\s]+", str(x)) if y.strip())
+    if not items:
+        rec = cfg.get("recipients") or []
+        if isinstance(rec, str):
+            rec = [x.strip() for x in re.split(r"[,;\\s]+", rec) if x.strip()]
+        items = [str(x).strip() for x in rec if str(x).strip()]
+    return items
+
+
+def _send_email_sync(to_list: list, subject: str, body: str, html: bool) -> None:
+    cfg = _load_email_config()
+    host = str(cfg.get("host") or "").strip()
+    if not host:
+        raise RuntimeError("未配置 SMTP 服务器，请先在 WebUI 系统设置中配置邮件服务")
+    try:
+        port = int(cfg.get("port") or 465)
+    except (TypeError, ValueError):
+        port = 465
+    security = str(cfg.get("security") or "ssl").lower()
+    try:
+        timeout = float(cfg.get("timeout") or 15)
+    except (TypeError, ValueError):
+        timeout = 15.0
+    username = str(cfg.get("username") or "")
+    password = str(cfg.get("password") or "")
+    from_addr = str(cfg.get("from_addr") or "").strip() or username
+    if not from_addr:
+        raise RuntimeError("未配置发件人地址，请先在 WebUI 系统设置中完善邮件配置")
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = formataddr((str(cfg.get("from_name") or "NoneBot2 WebUI"), from_addr))
+    msg["To"] = ", ".join(to_list)
+    if html:
+        msg.set_content(re.sub(r"<[^>]+>", "", body) or body)
+        msg.add_alternative(body, subtype="html")
+    else:
+        msg.set_content(body)
+    if security == "ssl":
+        server: smtplib.SMTP = smtplib.SMTP_SSL(
+            host, port, timeout=timeout, context=ssl.create_default_context()
+        )
+    else:
+        server = smtplib.SMTP(host, port, timeout=timeout)
+    with server:
+        if security == "starttls":
+            server.ehlo()
+            server.starttls(context=ssl.create_default_context())
+            server.ehlo()
+        if username:
+            server.login(username, password)
+        server.send_message(msg)
+
+
+async def _send_email(ctx: dict, to: Any, subject: Any, body: Any, html: Any = False) -> None:
+    """发送邮件（使用 WebUI 设置中的 SMTP 配置），结果写入 ctx 的 email_sent/email_result。"""
+    cfg = _load_email_config()
+    to_list = _email_recipients(_tpl(to, ctx), cfg)
+    subject_text = str(_tpl(subject, ctx) or "NoneBot2 WebUI 通知")
+    body_text = str(_tpl(body, ctx) or "")
+    if not to_list:
+        ctx["email_sent"] = False
+        ctx["email_result"] = {"ok": False, "error": "未配置收件人"}
+        nonebot.logger.warning("[可视化插件] 发送邮件失败：未配置收件人")
+        return
+    try:
+        await asyncio.to_thread(_send_email_sync, to_list, subject_text, body_text, bool(html))
+        ctx["email_sent"] = True
+        ctx["email_result"] = {"ok": True, "to": to_list, "subject": subject_text}
+    except Exception as exc:  # noqa: BLE001
+        ctx["email_sent"] = False
+        ctx["email_result"] = {
+            "ok": False,
+            "to": to_list,
+            "subject": subject_text,
+            "error": str(exc),
+        }
+        nonebot.logger.warning(f"[可视化插件] 发送邮件失败：{exc}")
 
 
 def _build_ctx(bot: Optional[Bot], event: Optional[Event], webhook: Optional[dict] = None) -> dict:
@@ -912,6 +1026,18 @@ def _emit_step(node: dict, flow: dict) -> str:
         lines.append(
             f"        ctx[{_py_literal(var)}] = {{'status': 0, 'error': str(_exc), "
             "'text': '', 'data': None, 'headers': {}}"
+        )
+        next_id = _next_in_flow(flow, nid, "next")
+        if next_id:
+            lines.append(f"    await _step_{next_id}(ctx)")
+    elif ntype == "send_email":
+        to = cfg.get("to", "")
+        subject = cfg.get("subject", "")
+        body = cfg.get("body", "")
+        html = bool(cfg.get("html", False))
+        lines.append(
+            f"    await _send_email(ctx, {_py_literal(to)}, {_py_literal(subject)}, "
+            f"{_py_literal(body)}, {_py_literal(html)})"
         )
         next_id = _next_in_flow(flow, nid, "next")
         if next_id:
@@ -1231,6 +1357,10 @@ def generate_code(plugin: VisualPlugin, bot_name: str = "") -> str:
             "%%PLUGIN_MODULE%%", json.dumps(plugin.module, ensure_ascii=True)
         )
         .replace("%%BOT_NAME%%", json.dumps(bot_name, ensure_ascii=True))
+        .replace(
+            "%%EMAIL_CONFIG_PATH%%",
+            json.dumps(str(config.EMAIL_FILE), ensure_ascii=True),
+        )
     )
     step_parts = [
         _emit_step(node, flow)

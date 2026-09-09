@@ -19,6 +19,7 @@ FRONTEND_DIST = PROJECT_ROOT / "frontend" / "dist"
 USERS_FILE = DATA_DIR / "users.json"
 BOTS_FILE = DATA_DIR / "bots.json"
 CONFIG_FILE = DATA_DIR / "config.json"
+EMAIL_FILE = DATA_DIR / "email.json"
 
 # 创建机器人时的默认配置
 DEFAULT_HOST = "0.0.0.0"

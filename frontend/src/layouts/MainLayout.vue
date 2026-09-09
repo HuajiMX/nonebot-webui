@@ -129,7 +129,7 @@ const navs = [
 const currentTitle = computed(() => {
   if (route.name === "bot-detail") return "机器人详情";
   if (route.name === "visual-plugin-editor") return "可视化插件编写";
-  const item = navs.find((n) => route.path.startsWith(n.path));
+  const item = navs.find((n) => isActive(n.path));
   return item ? item.label : "NoneBot2 WebUI";
 });
 

@@ -12,6 +12,7 @@ from collections import deque
 from pathlib import Path
 from typing import Deque, Dict, Optional, Set
 
+from . import config, notifier
 from .bot_manager import bot_manager
 
 
@@ -30,7 +31,8 @@ class _BotProc:
         self.stopped_by_user = False
 
     def feed(self, data: dict) -> None:
-        self.manager._feed(self.bot_id, data)
+        # 用户主动停止/重启时，残留的“连接关闭”日志不应触发断连通知
+        self.manager._feed(self.bot_id, data, suppress_notify=self.stopped_by_user)
 
     def reader(self) -> None:
         """读取子进程 stdout 并分发日志，进程退出后更新状态。"""
@@ -74,11 +76,15 @@ class ProcessManager:
         self._loop = loop
 
     # ---------- 日志分发 ----------
-    def _feed(self, bot_id: str, data: dict) -> None:
+    def _feed(self, bot_id: str, data: dict, suppress_notify: bool = False) -> None:
         """写入日志缓冲并广播（线程安全）。"""
         with self._lock:
             buf = self._buffers.setdefault(bot_id, deque(maxlen=2000))
             buf.append(data)
+        if not suppress_notify and data.get("type") == "log":
+            text = str(data.get("data") or "")
+            if text and notifier.DISCONNECT_RE.search(text):
+                notifier.notify_qq_disconnect(bot_id, text.strip()[:300])
         self._emit(bot_id, data)
 
     def _emit(self, bot_id: str, data: dict) -> None:
@@ -157,6 +163,8 @@ class ProcessManager:
         env = os.environ.copy()
         env.setdefault("PYTHONUTF8", "1")
         env.setdefault("PYTHONIOENCODING", "utf-8")
+        # 让机器人进程内的可视化插件也能读取 WebUI 的 SMTP 配置
+        env.setdefault("NB_WEBUI_EMAIL_CONFIG", str(config.EMAIL_FILE))
 
         creationflags = CREATE_NO_WINDOW
         popen_kwargs: dict = {}
@@ -255,6 +263,11 @@ class ProcessManager:
             bot.status = "error" if bp.exit_code not in (0, None) else "stopped"
             if bot.status == "error":
                 bot.extra["error"] = f"进程异常退出，退出码 {bp.exit_code}"
+            notifier.notify_bot_exit(
+                bp.bot_id,
+                bp.exit_code,
+                "进程异常退出" if bot.status == "error" else "进程已退出",
+            )
         bot_manager.update_bot(bot)
 
     def shutdown_all(self) -> None:

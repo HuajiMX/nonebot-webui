@@ -39,7 +39,7 @@ jobs:
         run: |
           sudo apt-get update -qq && sudo apt-get install -y -qq zip
           mkdir -p pkg
-          cp -r backend frontend install.py install.ps1 install.sh start.py update.py requirements.txt README.md LICENSE pkg/
+          cp -r backend frontend install.py install.ps1 install.sh start.py update.py requirements.txt README.md LICENSE CHANGELOG.md pkg/
           rm -rf pkg/frontend/node_modules
           find pkg -name "__pycache__" -type d -exec rm -rf {} +
           (cd pkg && zip -r ../nonebot-webui.zip .)
@@ -50,10 +50,25 @@ jobs:
           sha256sum nonebot-webui.zip > nonebot-webui.zip.sha256
           cat nonebot-webui.zip.sha256
 
+      - name: Extract changelog
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          awk -v ver="$VERSION" '
+            $0 ~ "^## \\[" ver "\\]" { found=1; next }
+            found && ($0 ~ "^## \\[" || $0 ~ "^\\[[^]]+\\]:") { exit }
+            found { print }
+          ' CHANGELOG.md > release_notes.md
+          if [ ! -s release_notes.md ]; then
+            echo "CHANGELOG.md 中未找到 [${VERSION}] 段落，请先补充更新日志" >&2
+            exit 1
+          fi
+          echo "----- release notes -----"
+          cat release_notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
             nonebot-webui.zip
             nonebot-webui.zip.sha256
-          generate_release_notes: true
+          body_path: release_notes.md

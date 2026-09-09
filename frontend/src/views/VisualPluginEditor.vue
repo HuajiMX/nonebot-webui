@@ -277,6 +277,46 @@
             </el-form>
           </template>
 
+          <!-- 发送邮件 -->
+          <template v-else-if="selectedNode.type === 'send_email'">
+            <el-form label-position="top" size="small">
+              <el-form-item label="收件人（留空=系统通知收件邮箱）">
+                <el-input
+                  v-model="selectedNode.config.to"
+                  v-var-drop
+                  placeholder="多个邮箱用逗号分隔，支持 {{变量}}"
+                />
+              </el-form-item>
+              <el-form-item label="邮件主题">
+                <el-input
+                  v-model="selectedNode.config.subject"
+                  v-var-drop
+                  placeholder="例如：来自 {{bot_name}} 的通知"
+                />
+              </el-form-item>
+              <el-form-item label="邮件正文">
+                <el-input
+                  v-model="selectedNode.config.body"
+                  v-var-drop
+                  type="textarea"
+                  :rows="6"
+                  placeholder="支持 {{变量}}，例如：收到来自 {{sender.nickname}} 的消息：{{msg}}"
+                />
+              </el-form-item>
+              <el-form-item label="正文格式">
+                <el-switch
+                  v-model="selectedNode.config.html"
+                  active-text="HTML"
+                  inactive-text="纯文本"
+                />
+              </el-form-item>
+              <el-alert type="info" :closable="false">
+                使用「系统设置 → 邮件通知」中配置的 SMTP 服务；发送结果可在后续节点用
+                <code v-pre>{{email_sent}}</code> 判断是否成功。
+              </el-alert>
+            </el-form>
+          </template>
+
           <!-- 定时任务 -->
           <template v-else-if="selectedNode.type === 'schedule'">
             <el-form label-position="top" size="small">
@@ -472,6 +512,7 @@ import {
   Key,
   List,
   Link as LinkIcon,
+  Message,
   MessageBox,
   Operation,
   Plus,
@@ -547,6 +588,7 @@ const iconMap = {
   loop: RefreshRight,
   schedule: Timer,
   api: Connection,
+  send_email: Message,
   code: Document,
   send: Promotion,
   conversation_entry: MessageBox,
@@ -760,6 +802,8 @@ function nodeSummary(node) {
     }
     case "api":
       return `${cfg.method || "GET"} ${cfg.url || "…"} → ${cfg.var || "api_resp"}`;
+    case "send_email":
+      return `${cfg.to || "系统收件邮箱"} · ${cfg.subject || "无主题"}`;
     case "code":
       return (cfg.code || "").split("\n")[0] || "输入 Python 代码";
     case "send":
@@ -1137,6 +1181,10 @@ const flowVars = computed(() => {
     if (n.type === "api") {
       set.add(n.config.var || "api_resp");
     }
+    if (n.type === "send_email") {
+      set.add("email_sent");
+      set.add("email_result");
+    }
     if (n.type === "conversation_entry") {
       set.add("session");
     }
@@ -1381,6 +1429,8 @@ onBeforeUnmount(() => {
   border-right: 1px solid var(--nb-border);
   padding: 12px;
   overflow: auto;
+  /* 预留滚动条槽位，让滚动条位于内容留白之外，左右留白保持一致 */
+  scrollbar-gutter: stable;
 }
 
 .palette-title,
@@ -1427,6 +1477,10 @@ onBeforeUnmount(() => {
 
 .palette-item.basic .el-icon {
   color: #409eff;
+}
+
+.palette-item.feature .el-icon {
+  color: #b37feb;
 }
 
 .palette-item.action .el-icon {
@@ -1607,6 +1661,11 @@ onBeforeUnmount(() => {
 .node-card.schedule,
 .node-card.code {
   border-left-color: #409eff;
+}
+
+.node-card.api,
+.node-card.send_email {
+  border-left-color: #b37feb;
 }
 
 .node-card.send {

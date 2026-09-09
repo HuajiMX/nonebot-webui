@@ -20,7 +20,7 @@ from . import __version__
 from .bot_manager import bot_manager
 from .config import FRONTEND_DIST, ensure_data_dir
 from .process_manager import process_manager
-from .routers import auth, bots, logs, monitor, plugins, terminal, update, visual_plugins
+from .routers import auth, bots, logs, monitor, plugins, settings, terminal, update, visual_plugins
 from .terminal import terminal_manager
 
 logger = logging.getLogger(__name__)
@@ -104,6 +104,7 @@ app.include_router(terminal.router)
 app.include_router(monitor.router)
 app.include_router(visual_plugins.router)
 app.include_router(update.router)
+app.include_router(settings.router)
 
 
 @app.get("/api/health")
