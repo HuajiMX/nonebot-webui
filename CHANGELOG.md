@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-09-09
+
 ### 新增
 
 - 系统设置新增邮件通知，可配置 SMTP 服务器、发件账号与通知收件邮箱
@@ -29,6 +31,7 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.1...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.0...HEAD
+[1.1.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.0...v1.0.1
 [1.0.0]: https://github.com/HuajiMX/nonebot-webui/releases/tag/v1.0.0
