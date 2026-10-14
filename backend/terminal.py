@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import os
 import platform
+import signal
 import threading
 import time
 import uuid
@@ -36,6 +37,8 @@ class TerminalSession:
         self._lock = threading.RLock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop = threading.Event()
+        self._closed = False
+        self._reader_thread: Optional[threading.Thread] = None
         self.alive = False
         self.error: Optional[str] = None
         self.created_at = time.time()
@@ -53,8 +56,10 @@ class TerminalSession:
 
         if self.pty is not None:
             self.alive = True
-            t = threading.Thread(target=self._reader, daemon=True, name=f"term-{session_id}")
-            t.start()
+            self._reader_thread = threading.Thread(
+                target=self._reader, daemon=True, name=f"term-{session_id}"
+            )
+            self._reader_thread.start()
 
     # ---------- 创建 ----------
     def _normalize_command(self) -> list:
@@ -130,16 +135,23 @@ class TerminalSession:
     # ---------- 读写 ----------
     def _reader(self) -> None:
         while not self._stop.is_set():
+            pty = self.pty
+            if pty is None:
+                break
             try:
-                data = self.pty.read(4096)
+                data = pty.read(4096)
             except EOFError:
                 self._push({"type": "exit", "data": "[会话已结束]"})
+                break
+            except OSError:
+                # 子进程退出 / master 端已关闭（EIO），属正常终态，不报错
                 break
             except Exception as exc:  # noqa: BLE001
                 self._push({"type": "exit", "data": f"[终端错误] {exc}"})
                 break
-            if data:
-                self._push({"type": "output", "data": data})
+            if not data:
+                break
+            self._push({"type": "output", "data": data})
         self.alive = False
         self._push({"type": "exit", "data": ""})
 
@@ -189,14 +201,87 @@ class TerminalSession:
         except Exception:  # noqa: BLE001
             pass
 
-    def close(self) -> None:
-        self._stop.set()
+    @staticmethod
+    def _kill_child(pty) -> None:
+        """终止 pty 子进程（含整个进程组）并让它被回收。
+
+        两个坑：
+        1. **必须杀整个进程组**。ptyprocess 自带的 ``kill()`` 只对直接子进程发信号，
+           而这里的终端命令是 ``bash -c "bash --rcfile ... -i"``，内层的交互式
+           shell 会活下来变成孤儿进程（线上实测已泄漏过一个）。
+        2. **不要自己调 ``os.waitpid()``**。ptyprocess 的 ``isalive()`` 内部会再
+           ``waitpid()`` 一次，一旦发现子进程已被别人回收，就会抛
+           ``PtyProcessError: ... Did someone else call waitpid() on our process?``。
+           因此这里只发信号，然后反复调用 ``pty.isalive()``，让 ptyprocess
+           自己完成回收。
+        """
+        pid = getattr(pty, "pid", None)
+        if not pid or platform.system() == "Windows":
+            return
         try:
-            if self.pty is not None:
-                self.pty.close()
+            os.killpg(os.getpgid(pid), signal.SIGKILL)
+        except OSError:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                return
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            try:
+                if not pty.isalive():  # 由 ptyprocess 负责 waitpid 回收
+                    return
+            except Exception:  # noqa: BLE001
+                return
+            time.sleep(0.02)
+
+    def close(self, timeout: float = 3.0) -> None:
+        """关闭会话（幂等，可重复调用）。
+
+        ⚠️ 这里不能直接照搬 ptyprocess 的 close()：它第一步就关 pty master 的
+        文件对象（ptyprocess.py:401 `self.fileobj.close()`）。若此时 ``_reader``
+        线程仍阻塞在同一个 fd 的 ``read()`` 上（常见于客户端异常断开、子进程还
+        活着），内核 tty 释放流程（tty_release → tty_ldisc_hangup）会等待在途
+        的 ldisc 引用释放，而 ``read()`` 又在等 tty 读锁 —— 两者互等，**close()
+        永久挂起**。由于本方法原先在 WebSocket 处理器的 finally 里被同步调用，
+        等于把唯一的 asyncio 事件循环线程永久卡死，表现为"服务还在跑但所有请求
+        都超时"，也就是前端那句"网络错误，请检查服务是否启动"。
+
+        因此正确顺序为：
+            置停止位 → **先杀子进程（含进程组）** → 等 reader 线程退出 → 最后才关 master。
+        即使 reader 仍未退出，也宁可不调 ``pty.close()``（泄漏一个 fd），
+        绝不允许让调用线程挂死。
+        """
+        if self._closed:
+            return
+        self._closed = True
+        self._stop.set()
+        self.alive = False
+
+        pty = self.pty
+        if pty is None:
+            return
+
+        # 1) 先杀子进程（含进程组）：slave 端消失后，master 上的 read() 会返回
+        #    EIO/b''，reader 线程才能退出循环、释放 ldisc 引用。
+        self._kill_child(pty)
+
+        # 2) 等 reader 退出，确保没有在途 read()。
+        reader = self._reader_thread
+        if reader is not None and reader.is_alive():
+            reader.join(timeout=timeout)
+
+        # 3) 只有在确认 reader 已退出时才关闭 master，避免互锁。
+        if reader is not None and reader.is_alive():
+            self.error = f"{self.error or ''}[会话未完全释放：reader 线程仍在读取]"
+            self.pty = None
+            return
+
+        try:
+            pty.close()
         except Exception:  # noqa: BLE001
             pass
-        self.alive = False
+        finally:
+            self.pty = None
 
 
 class TerminalManager:

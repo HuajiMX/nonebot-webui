@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
@@ -90,6 +91,10 @@ async def terminal_ws(websocket: WebSocket) -> None:
     finally:
         task.cancel()
         session.detach(queue)
-        if session.alive:
-            session.close()
-        terminal_manager.remove(session.id)
+        # 会话销毁最终会调用 ptyprocess.PtyProcess.close()。只要 reader 线程还阻塞
+        # 在该 pty 的 read() 上，close() 就会与内核 tty 释放流程互锁并永久挂起。
+        # 若直接在事件循环里 await/调用它，唯一的 loop 线程会被卡死，导致全站接口
+        # 超时（前端显示"网络错误，请检查服务是否启动"）。因此：
+        #   ① close() 内部已改为"先杀子进程→等 reader 退出→最后关 master"；
+        #   ② 这里再做一层隔离，把销毁放到工作线程执行，事件循环始终保持响应。
+        await asyncio.to_thread(terminal_manager.remove, session.id)
