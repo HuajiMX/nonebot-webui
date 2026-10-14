@@ -3,6 +3,11 @@
 由 WebUI 的「更新」按钮触发：下载新版发布包 -> 停止服务 -> 备份 data/ ->
 替换代码（保留 data/ 与 .venv）-> 依赖变化则重装 -> 重启服务。
 
+托管方式自适应：
+  * 服务由 systemd 单元托管时，先把自身搬进独立瞬时单元（systemd-run）脱离
+    服务 cgroup，再用 systemctl stop/start 停启服务；
+  * 其他方式（nohup / tmux / 启动WebUI.bat 等）沿用「直接终止进程 + 自行拉起」。
+
 用法：
     python update.py --url <发布包zip地址> [--port 9527] [--pid <进程id>] [--skip-restart]
 """
@@ -53,7 +58,164 @@ def sha256(path: Path) -> str:
     return h.hexdigest()
 
 
-def stop_server(port: int, pid: int | None) -> None:
+# ---------- systemd 托管感知 ----------
+# 背景：若服务由 systemd 单元托管，本脚本作为它的子进程也位于同一个 cgroup。
+# 一旦（为了替换代码而）杀掉服务主进程，systemd 会按 KillMode=control-group
+# 清空该 cgroup，把本脚本一并终止 —— 而这一步发生在 apply_update() 之前，
+# 结果是「更新看似执行、代码其实没换」。与此同时，单元上的 Restart=always
+# 会在几秒后自动拉起服务，与本脚本自己 Popen 的实例抢同一个端口。
+# 因此检测到 systemd 托管时：
+#   ① 先用 systemd-run 把本脚本搬进独立瞬时单元，脱离服务 cgroup；
+#   ② 用 systemctl stop/start 停启服务，交给 systemd 管理生命周期。
+# 非 systemd 环境（nohup / tmux / 启动WebUI.bat 等）行为与此前完全一致。
+DETACHED_ENV = "NB_WEBUI_UPDATE_DETACHED"
+UNIT_ENV = "NB_WEBUI_UPDATE_UNIT"
+DETACH_UNIT_PREFIX = "nbwebui-update"
+
+
+def _cgroup_path(pid: int) -> str:
+    """读取进程所属 cgroup（cgroup v2 形如 0::/system.slice/xxx.service）。"""
+    try:
+        text = Path(f"/proc/{pid}/cgroup").read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    for line in reversed(text.strip().splitlines()):
+        parts = line.split(":", 2)
+        if len(parts) == 3 and parts[2].strip():
+            return parts[2].strip()
+    return ""
+
+
+def detect_service_unit(pid: int | None = None) -> str | None:
+    """目标进程若由 systemd 服务单元托管，返回其单元名；否则返回 None。"""
+    if os.name == "nt" or not Path("/run/systemd/system").exists():
+        return None
+    path = _cgroup_path(pid or os.getpid())
+    if not path:
+        return None
+    name = path.rstrip("/").rsplit("/", 1)[-1]
+    return name if name.endswith(".service") else None
+
+
+def _systemctl(action: str, unit: str, timeout: float = 90.0) -> bool:
+    """按「用户级 → 系统级 → 免密 sudo」顺序尝试停/启单元，任一成功即返回 True。
+
+    服务可能以普通用户身份运行，此时 `systemctl stop <系统单元>` 会被 polkit 拒绝，
+    因此需要依次降级尝试（本项目的部署即依赖 `sudo -n`）；全部失败由调用方决定怎么办。
+    """
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    user_env = dict(os.environ)
+    user_env["XDG_RUNTIME_DIR"] = runtime_dir
+    user_env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
+
+    candidates = [
+        ("systemctl --user", ["systemctl", "--user", action, unit], user_env),  # 用户级单元
+        ("systemctl", ["systemctl", action, unit], None),  # 系统级（本身是 root 时可行）
+    ]
+    if hasattr(os, "geteuid") and os.geteuid() != 0:
+        candidates.append(
+            ("sudo -n systemctl", ["sudo", "-n", "systemctl", action, unit], None)
+        )
+
+    reasons = []
+    for label, cmd, env in candidates:
+        try:
+            proc = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=timeout, env=env
+            )
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(f"{label}：{exc}")
+            continue
+        if proc.returncode == 0:
+            log(f"systemctl {action} {unit} 成功（{label}）")
+            return True
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        reasons.append(f"{label}：{detail[-1] if detail else proc.returncode}")
+    log(f"systemctl {action} {unit} 全部失败：" + "；".join(reasons))
+    return False
+
+
+def _detach_candidates(unit: str) -> list:
+    """构造「把自身搬离服务 cgroup」的候选命令：(说明, 命令, 环境)，按优先级排列。"""
+    inner = [sys.executable, str(Path(__file__).resolve()), *sys.argv[1:], "--systemd-unit", unit]
+    unit_name = f"{DETACH_UNIT_PREFIX}-{int(time.time())}-{os.getpid()}"
+    common = [
+        "--collect",
+        f"--unit={unit_name}",
+        f"--setenv={DETACHED_ENV}=1",
+        f"--setenv={UNIT_ENV}={unit}",
+        f"--working-directory={ROOT}",
+    ]
+    user = group = None
+    try:
+        import grp
+        import pwd
+
+        user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(os.getgid()).gr_name
+    except Exception:  # noqa: BLE001
+        pass
+    root_common = list(common)
+    if user:
+        # 借 sudo 起系统级瞬时单元时，显式指定用户，避免把项目文件写成 root 属主
+        root_common += [f"--property=User={user}", f"--property=Group={group or user}"]
+
+    # ① 用户级管理器：同用户、无需提权（需 linger 或存在登录会话）
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    user_env = dict(os.environ)
+    user_env["XDG_RUNTIME_DIR"] = runtime_dir
+    user_env.setdefault("DBUS_SESSION_BUS_ADDRESS", f"unix:path={runtime_dir}/bus")
+    return [
+        ("systemd-run --user", ["systemd-run", "--user", *common, *inner], user_env),
+        ("sudo -n systemd-run", ["sudo", "-n", "systemd-run", *root_common, *inner], None),
+        ("systemd-run（当前已是 root）", ["systemd-run", *root_common, *inner], None),
+    ]
+
+
+def detach_from_service_cgroup(unit: str) -> bool:
+    """把本脚本搬进独立瞬时单元运行；成功返回 True（调用方应立即退出）。"""
+    reasons = []
+    for label, cmd, env in _detach_candidates(unit):
+        try:
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+        except Exception as exc:  # noqa: BLE001
+            reasons.append(f"{label}：{exc}")
+            continue
+        if proc.returncode == 0:
+            log(f"已通过「{label}」把更新进程转入独立单元")
+            return True
+        detail = (proc.stderr or proc.stdout or "").strip().splitlines()
+        reasons.append(f"{label}：{detail[-1] if detail else proc.returncode}")
+    log("搬离 cgroup 的候选方式均未成功：" + "；".join(reasons))
+    return False
+
+
+def _wait_port_released(port: int, timeout: int = 15) -> bool:
+    for _ in range(timeout):
+        if not _port_alive(port):
+            return True
+        time.sleep(1)
+    return False
+
+
+def stop_server(port: int, pid: int | None, unit: str = "") -> None:
+    if unit:
+        log(f"服务由 systemd 单元 {unit} 托管：改用 systemctl 停服")
+        if _systemctl("stop", unit):
+            if not _wait_port_released(port):
+                log("systemctl stop 后端口仍未释放，继续更新流程")
+            return
+        # 停服失败时不能改用「直接杀进程」：那会触发 systemd 的 Restart=always
+        # 在替换代码途中把服务拉起来，造成新旧代码互相踩踏。仅当端口本来就空着
+        #（服务未在运行）才继续，否则中止并给出人工步骤。
+        if not _port_alive(port):
+            log("端口已释放（服务本就未运行），继续更新流程")
+            return
+        raise RuntimeError(
+            f"无法停止 systemd 单元 {unit}（权限不足）。请手动执行："
+            f"sudo systemctl stop {unit} → 覆盖代码 → sudo systemctl start {unit}"
+        )
+
     targets = set()
     if pid:
         targets.add(pid)
@@ -236,7 +398,14 @@ def _venv_python() -> Path:
     return ROOT / ".venv" / "bin" / "python"
 
 
-def restart_server() -> None:
+def restart_server(unit: str = "") -> None:
+    if unit:
+        log(f"服务由 systemd 单元 {unit} 托管：改用 systemctl 启动服务")
+        if _systemctl("start", unit):
+            return
+        log(f"⚠️ 未能自动启动 systemd 单元 {unit}，请手动执行：sudo systemctl start {unit}")
+        return
+
     python = _venv_python()
     if not python.exists():
         log("未找到 .venv，跳过自动重启（可手动运行 start.py）")
@@ -261,20 +430,52 @@ def restart_server() -> None:
         )
 
 
+def _next_backup_dir() -> Path:
+    """本次更新要用的数据备份目录。
+
+    目录名只精确到秒，而「失败后立刻重试」「同一秒内被触发两次」都可能撞名，
+    `shutil.copytree` 会直接抛 FileExistsError 把整个更新中断，故自动加序号避让。
+    """
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    backup = ROOT.parent / f"data_backup_{stamp}"
+    seq = 1
+    while backup.exists():
+        seq += 1
+        backup = ROOT.parent / f"data_backup_{stamp}_{seq}"
+    return backup
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="NoneBot2 WebUI 一键更新")
     parser.add_argument("--url", required=True, help="新版发布包 zip 地址")
     parser.add_argument("--port", type=int, default=9527, help="服务监听端口")
     parser.add_argument("--pid", type=int, default=0, help="服务进程 PID")
     parser.add_argument("--skip-restart", action="store_true", help="更新后不重启（测试用）")
+    parser.add_argument("--systemd-unit", default="", help="服务所在的 systemd 单元（内部使用）")
     args = parser.parse_args()
+
+    # 0) systemd 托管时，先把自己搬离服务 cgroup，否则会被 systemd 连带终止
+    unit = args.systemd_unit.strip() or os.environ.get(UNIT_ENV, "").strip()
+    if not unit:
+        unit = detect_service_unit(args.pid or None) or ""
+    if unit and os.environ.get(DETACHED_ENV) != "1":
+        log(f"检测到服务由 systemd 单元 {unit} 托管，正在把更新进程搬离其 cgroup …")
+        if detach_from_service_cgroup(unit):
+            log("更新进程已转入独立单元继续执行，本进程退出")
+            return 0
+        log(
+            "⚠️ 更新已中止：无法把更新进程搬离 systemd cgroup。继续执行的话，"
+            "停止服务时本脚本会被 systemd 一并终止，可能造成代码只替换一半。"
+            f"请手动更新：sudo systemctl stop {unit} → 覆盖代码 → sudo systemctl start {unit}"
+        )
+        return 1
 
     log("===== 更新开始 =====")
     tmp_zip = Path(tempfile.gettempdir()) / "nonebot-webui_update.zip"
     try:
         # 备份数据
         if DATA_DIR.exists():
-            backup = ROOT.parent / f"data_backup_{time.strftime('%Y%m%d_%H%M%S')}"
+            backup = _next_backup_dir()
             shutil.copytree(DATA_DIR, backup)
             log(f"已备份数据到：{backup}")
         else:
@@ -283,14 +484,14 @@ def main() -> int:
         # 先下载（此时旧服务仍在运行，前端可实时看到进度），再停服替换
         download(args.url, tmp_zip)
         verify_checksum(args.url, tmp_zip)
-        stop_server(args.port, args.pid or None)
+        stop_server(args.port, args.pid or None, unit)
         time.sleep(2)
 
         apply_update(tmp_zip)
         log("更新内容应用完成")
 
         if not args.skip_restart:
-            restart_server()
+            restart_server(unit)
             if wait_server_up(args.port):
                 log("===== 更新完成，服务已重启 =====")
             else:
