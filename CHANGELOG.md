@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.1.2] - 2026-10-14
+
+### 修复
+
+- 修复服务由 systemd 托管时「一键更新」会被 systemd 连带终止、导致代码只替换一半或更新看似执行却未生效的问题
+- 修复更新时同一秒内重复触发导致数据备份目录重名、进而中断更新的问题
+
 ## [1.1.1] - 2026-10-14
 
 ### 修复
@@ -39,7 +46,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.1...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.2...HEAD
+[1.1.2]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.1...v1.1.0
 [1.0.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.0...v1.0.1
