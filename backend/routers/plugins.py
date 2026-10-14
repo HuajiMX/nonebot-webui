@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
@@ -66,9 +67,10 @@ async def upload_plugin(
     content = await file.read()
     if len(content) > 50 * 1024 * 1024:
         raise HTTPException(status_code=400, detail="文件过大（上限 50MB）")
-    try:
+
+    def _install() -> dict:
         if filename.lower().endswith(".zip"):
-            result = install_plugin_zip(
+            return install_plugin_zip(
                 bot_id,
                 filename,
                 content,
@@ -76,8 +78,14 @@ async def upload_plugin(
                     bot_id, {"type": "log", "data": msg, "ts": time.time()}
                 ),
             )
-        else:
-            result = install_plugin_file(bot_id, filename, content)
+        return install_plugin_file(bot_id, filename, content)
+
+    try:
+        # 安装过程中内部会执行 pip install（plugin_manager 里 wait 上限 600 s）。
+        # 若在 async 处理器里同步执行，整个事件循环会停摆最长 10 分钟，全站接口
+        # 一起超时（前端显示“网络错误，请检查服务是否启动”）。
+        # process_manager._feed 是线程安全的（内部 RLock + 队列广播），
+        # 故可安全地从工作线程推送进度日志。
+        return await asyncio.to_thread(_install)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return result

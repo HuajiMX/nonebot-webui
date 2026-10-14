@@ -28,7 +28,11 @@ async def monitor_ws(websocket: WebSocket) -> None:
         return
     try:
         while True:
-            await websocket.send_json(snapshot())
+            # snapshot() 会同步遍历系统全部进程：Windows 上实测可达 11 s，Linux 约 12 ms。
+            # 一旦直接在事件循环里调用，就会阻塞**所有**其它请求（前端表现为
+            # “网络错误，请检查服务是否启动”），因此统一丢到工作线程执行。
+            data = await asyncio.to_thread(snapshot)
+            await websocket.send_json(data)
             await asyncio.sleep(2)
     except WebSocketDisconnect:
         pass
