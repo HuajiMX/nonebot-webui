@@ -546,6 +546,14 @@ def main() -> int:
             check("落盘代码为编译式控制流", "async def _step_" in content and "on_message" in content)
             check("落盘代码不内嵌流程 JSON 解释器", '"FLOW"' not in content and "run_flow" not in content)
             check("定时任务使用定点触发计算", "_seconds_until(9, 0)" in content)
+            check(
+                "定时任务使用后台任务并记录触发日志",
+                "_spawn(_task())" in content and "定时任务触发" in content,
+            )
+            check(
+                "定时任务/WebHook 发送消息可解析 Bot",
+                "def _resolve_bot(" in content and "bot = _resolve_bot(ctx)" in content,
+            )
             check("WebHook 请求体保存到变量", "ctx['hook_data'] = payload" in content)
             check("WebHook 载荷解析支持 JSON/表单/文本", "await request.json()" in content and "await request.form()" in content)
             check("API请求组件生成代码", "httpx.AsyncClient" in content and "ctx['api_resp']" in content)

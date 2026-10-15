@@ -143,6 +143,7 @@ cd frontend; npm install; npm run build
 - `scripts/first_run_test.py`：全新安装首次运行流程（`/setup` → 登录 → 仪表盘）。
 - `scripts/ui_smoke_test.py`：前端冒烟（需 9527 端口 + `admin/admin123` + 一个测试机器人）。
 - `scripts/visual_plugin_smoke.py`：可视化插件编辑页冒烟（需 9530 端口 + `admin/admin123`，可用本地 http.server 模拟更新源）。
+- `scripts/visual_plugin_codegen_test.py`：可视化插件代码生成回归（纯标准库，无需启动服务；覆盖定时任务定点触发计算、定时任务/WebHook 的 Bot 解析与后台任务）。
 - 修改后端/前端后，先跑相关冒烟测试再交付；测试用隔离数据目录，避免污染真实数据。
 
 ## 给开发代理的注意事项

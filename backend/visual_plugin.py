@@ -448,6 +448,15 @@ _EMAIL_CONFIG_PATH = %%EMAIL_CONFIG_PATH%%
 
 _sessions: Dict[str, dict] = {}
 _pending: Dict[str, dict] = {}
+_bg_tasks: set = set()
+
+
+def _spawn(coro) -> None:
+    """启动后台任务并持有引用，避免任务被垃圾回收。"""
+    task = asyncio.create_task(coro)
+    _bg_tasks.add(task)
+    task.add_done_callback(_bg_tasks.discard)
+
 
 _SAFE_BUILTINS = {
     "range": range,
@@ -784,23 +793,66 @@ def _build_message(msgs: list, ctx: dict) -> Message:
     return out
 
 
-async def _send(ctx: dict, msgs: list, target_cfg: Optional[dict] = None) -> None:
+def _resolve_bot(ctx: dict) -> Optional[Bot]:
+    """解析可用的 Bot 对象。
+
+    消息监听触发时直接用上下文里的 Bot；定时任务 / WebHook 触发没有事件，
+    因此从 NoneBot 当前的连接池中取（指定了 bot_id 则精确匹配，否则取第一个）。
+    """
     bot = ctx.get("bot")
+    if bot is not None:
+        return bot
+    try:
+        bots = nonebot.get_bots()
+    except Exception:  # noqa: BLE001
+        return None
+    if not bots:
+        return None
+    bot_id = str(ctx.get("bot_id") or "")
+    if bot_id and bot_id in bots:
+        return bots[bot_id]
+    return next(iter(bots.values()))
+
+
+def _attach_bot(ctx: dict) -> None:
+    """给没有事件的触发分支（定时任务 / WebHook）补齐 Bot 与 bot_id。"""
+    bot = _resolve_bot(ctx)
+    if bot is not None:
+        ctx["bot"] = bot
+        ctx["bot_id"] = bot.self_id
+
+
+async def _send(ctx: dict, msgs: list, target_cfg: Optional[dict] = None) -> None:
     event = ctx.get("event")
-    message = _build_message(msgs, ctx)
-    if bot is None or not message:
-        return
     target_cfg = target_cfg or {}
     target = target_cfg.get("type", "event")
+    message = _build_message(msgs, ctx)
+    if not message:
+        nonebot.logger.warning("[可视化插件] 发送消息失败：消息内容为空")
+        return
+    bot = _resolve_bot(ctx)
+    if bot is None:
+        nonebot.logger.warning("[可视化插件] 发送消息失败：当前没有已连接的机器人")
+        return
+    if target == "event" and event is None:
+        nonebot.logger.warning(
+            "[可视化插件] 发送消息失败：定时任务 / WebHook 触发没有消息来源，"
+            "请在发送节点选择「指定群聊」或「指定私聊」"
+        )
+        return
     try:
         if target == "group":
             gid = int(target_cfg.get("id") or ctx.get("group_id") or 0)
             if gid:
                 await bot.call_api("send_group_msg", group_id=gid, message=message)
+            else:
+                nonebot.logger.warning("[可视化插件] 发送消息失败：未指定群号")
         elif target == "user":
             uid = int(target_cfg.get("id") or ctx.get("user_id") or 0)
             if uid:
                 await bot.call_api("send_private_msg", user_id=uid, message=message)
+            else:
+                nonebot.logger.warning("[可视化插件] 发送消息失败：未指定 QQ 号")
         elif event is not None:
             await bot.send(event, message)
     except Exception as exc:  # noqa: BLE001
@@ -850,9 +902,9 @@ def _loop_items(expr: Any, ctx: dict) -> list:
 
 
 def _seconds_until(hour: int, minute: int, weekday: Optional[int] = None, day: Optional[int] = None) -> float:
-    """计算距离下一个目标触发时刻的秒数。"""
+    """计算距离下一个目标触发时刻的秒数（含今天尚未到达的时刻）。"""
     now = datetime.datetime.now()
-    for offset in range(1, 370):
+    for offset in range(0, 370):
         d = now + datetime.timedelta(days=offset)
         if weekday is not None and d.weekday() != weekday:
             continue
@@ -1289,9 +1341,7 @@ async def _handle_{nid}(bot: Bot, event: PrivateMessageEvent):
             if not path.startswith("/"):
                 path = "/" + path
             var = (cfg.get("var") or "webhook").strip() or "webhook"
-            call_fire = (
-                f"asyncio.ensure_future(_step_{next_id}(ctx))" if next_id else "pass"
-            )
+            call_fire = f"_spawn(_step_{next_id}(ctx))" if next_id else "pass"
             sections.append(
                 f"""# ---------- 监听：WebHook ----------
 driver = get_driver()
@@ -1314,6 +1364,7 @@ async def _webhook_{nid}(request):
         except Exception:  # noqa: BLE001
             pass
     ctx = _build_ctx(None, None, webhook=payload)
+    _attach_bot(ctx)
     ctx[{_py_literal(var)}] = payload
     {call_fire}
     return {{"ok": True}}
@@ -1332,14 +1383,16 @@ async def _schedule_{nid}():
         while True:
             try:
                 await asyncio.sleep({delay})
+                nonebot.logger.info(f"[可视化插件] 定时任务触发：{{PLUGIN_NAME}}")
                 ctx = _build_ctx(None, None)
+                _attach_bot(ctx)
                 {call}
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001
                 nonebot.logger.warning(f"[可视化插件] 定时任务异常：{{exc}}")
 
-    asyncio.create_task(_task())
+    _spawn(_task())
 """
             )
     return sections
