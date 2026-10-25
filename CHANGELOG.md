@@ -6,6 +6,8 @@
 
 ## [Unreleased]
 
+## [1.1.4] - 2026-10-25
+
 ### 修复
 
 - 修复在「插件管理」里暂停插件后，插件里的定时任务仍在触发的问题：暂停改为把插件源码移入插件目录下的 `.webui_disabled/`，任何机器人入口（含注册的已有项目、手写 `bot.py`）都无法再加载它；启用时自动移回，历史暂停记录会在下次打开插件列表或启动机器人时自动迁移
@@ -58,7 +60,9 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.2...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...HEAD
+[1.1.4]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.3...v1.1.4
+[1.1.3]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.1...v1.1.2
 [1.1.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.0.1...v1.1.0
