@@ -32,7 +32,7 @@ backend/
   storage.py          JSON 读写工具
   bot_manager.py      机器人注册、脚手架生成（BOT_PY_TEMPLATE）、venv/依赖安装；ADAPTERS 常量
   process_manager.py  机器人子进程生命周期管理
-  plugin_manager.py   插件列表、启停、上传安装（.py/.zip）、webui_disabled_plugins.json
+  plugin_manager.py   插件列表、启停（暂停时源码移入 .webui_disabled/）、上传安装（.py/.zip）、webui_disabled_plugins.json
   terminal.py         终端会话（pywinpty / ptyprocess）
   monitor.py          系统监控（psutil）
   mailer.py           邮件服务：SMTP 配置存储（data/email.json）与发送
@@ -113,7 +113,9 @@ cd frontend; npm install; npm run build
 
 - 机器人由 WebUI 生成 NoneBot2 脚手架并托管进程（`managed=True`），状态机：`creating / starting / running / stopping / stopped / error`。
 - 适配器定义在 `bot_manager.ADAPTERS`；创建时选定协议（默认 OneBot V11）。
-- `webui_disabled_plugins.json`（机器人目录内）记录被停用的插件，仅托管机器人支持过滤加载。
+- 插件暂停 = **文件层面的隔离**：`plugin_manager` 把被暂停插件的源码（`.py` 文件或插件包目录）移到 `<plugin_dir>/.webui_disabled/`，启用时再移回。这样无论机器人入口是 WebUI 生成的托管脚手架、`nonebot.load_from_toml` 的已有项目，还是用户手写的 `bot.py`，NoneBot 的插件扫描（`pkgutil.iter_modules` / `plugin_dirs`）都发现不了它，插件里的定时任务也不会再注册/触发。
+- `webui_disabled_plugins.json`（机器人目录内）是暂停状态的持久化记录，与隔离目录保持同步；托管脚手架入口仍会读它做二次过滤。只有 JSON、源码未隔离的历史数据会在 `list_plugins` / 启动机器人时自动迁移（迁移逻辑在 `sync_disabled_files`，`process_manager.start` 启动前也会调用）。
+- 暂停期间覆盖安装插件会保持暂停（新内容写入隔离目录）；卸载插件会同时清理隔离目录里的副本。
 - 注册已有项目：目录已存在且非空时 `managed=False`，WebUI 自动识别 `.venv`/`venv`/`env` 并解析 Python，不重建脚手架；缺 `bot.py` 时按 `pyproject.toml` 的 `[tool.nonebot]` 自动生成标准入口（适配器兼容 `[tool.nonebot.adapters]` 字典格式与 `adapters = [...]` 列表格式，均取 module_name；未声明时回退注册时选择的协议），已有 `bot.py` 不覆盖；`plugin_dir` 也会按 `[tool.nonebot] plugin_dirs` 的首项自动同步（注册时 + 启动时兜底，仅对 `managed=False` 生效），插件列表/上传目录与实际加载目录保持一致。注册后的入口/目录同步失败不会把状态置为 error（启动时会自动重试）。
 - 启动一律以 `[python, bot.py]`（cwd=机器人目录）拉起子进程；启动前兜底检查入口，无法生成时给出明确错误而非「can't open file」。
 - **运行判定**：`process_manager.is_running()` 只看 WebUI 自己拉起的子进程（`proc.poll() is None`），WebUI 外部启动的机器人进程不识别；WebUI 重启时 lifespan 会把遗留的 running/stopping 机器人 SIGTERM 并统一置 `stopped`，随后自动拉起标记了 `auto_start` 的机器人（其余不会自动恢复）。
@@ -144,6 +146,7 @@ cd frontend; npm install; npm run build
 - `scripts/ui_smoke_test.py`：前端冒烟（需 9527 端口 + `admin/admin123` + 一个测试机器人）。
 - `scripts/visual_plugin_smoke.py`：可视化插件编辑页冒烟（需 9530 端口 + `admin/admin123`，可用本地 http.server 模拟更新源）。
 - `scripts/visual_plugin_codegen_test.py`：可视化插件代码生成回归（纯标准库，无需启动服务；覆盖定时任务定点触发计算、定时任务/WebHook 的 Bot 解析与后台任务）。
+- `scripts/plugin_disabled_test.py`：插件暂停/启用回归（纯标准库，无需启动服务；验证暂停后源码移入 `.webui_disabled/`、NoneBot 扫描不到、历史暂停数据自动迁移、暂停期间覆盖安装仍保持暂停、卸载时清理隔离副本）。
 - 修改后端/前端后，先跑相关冒烟测试再交付；测试用隔离数据目录，避免污染真实数据。
 
 ## 给开发代理的注意事项

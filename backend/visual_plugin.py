@@ -6,14 +6,13 @@ import json
 import re
 import uuid
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
 from . import config
 from .bot_manager import bot_manager
-from .plugin_manager import install_plugin_file
+from .plugin_manager import install_plugin_file, remove_plugin_files
 from .storage import load_json, save_json
 
 
@@ -1467,23 +1466,7 @@ def uninstall_from_bot(plugin_id: str, bot_id: str) -> dict:
     bot = bot_manager.get_bot(bot_id)
     if bot is None:
         raise ValueError("机器人不存在")
-    plugin_dir = bot_manager.plugin_dir_path(bot)
-    target = plugin_dir / f"{plugin.module}.py"
-    removed = False
-    if target.exists():
-        target.unlink()
-        removed = True
-    disabled_file = Path(bot.directory) / "webui_disabled_plugins.json"
-    if disabled_file.exists():
-        try:
-            disabled = set(json.loads(disabled_file.read_text(encoding="utf-8")))
-            disabled.discard(plugin.module)
-            disabled_file.write_text(
-                json.dumps(sorted(disabled), ensure_ascii=False, indent=2),
-                encoding="utf-8",
-            )
-        except (json.JSONDecodeError, OSError):
-            pass
+    removed = remove_plugin_files(bot_id, plugin.module)
     plugins = [VisualPlugin(**p) for p in list_visual_plugins()]
     target_p = next((p for p in plugins if p.id == plugin_id), None)
     if target_p is not None:

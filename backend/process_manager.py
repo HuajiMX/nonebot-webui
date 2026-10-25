@@ -14,6 +14,7 @@ from typing import Deque, Dict, Optional, Set
 
 from . import config, notifier
 from .bot_manager import bot_manager
+from .plugin_manager import sync_disabled_files
 
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
@@ -158,6 +159,20 @@ class ProcessManager:
                 log=lambda msg: self._feed(
                     bot_id, {"type": "log", "data": msg, "ts": time.time()}
                 ),
+            )
+
+        # 兜底：把 WebUI 中暂停的插件移出扫描目录，避免不读取禁用清单的入口
+        # （注册的已有项目 / 手写 bot.py）继续加载插件、定时任务照常触发
+        try:
+            sync_disabled_files(bot_id)
+        except Exception as exc:  # noqa: BLE001
+            self._feed(
+                bot_id,
+                {
+                    "type": "log",
+                    "data": f"[WebUI] 同步暂停插件时出错（已忽略）：{exc}",
+                    "ts": time.time(),
+                },
             )
 
         env = os.environ.copy()
