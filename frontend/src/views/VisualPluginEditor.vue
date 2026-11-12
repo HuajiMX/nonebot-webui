@@ -409,6 +409,110 @@
             </el-form>
           </template>
 
+          <!-- 获取空间动态 -->
+          <template v-else-if="selectedNode.type === 'qzone'">
+            <el-form label-position="top" size="small">
+              <el-form-item label="获取方式">
+                <el-select v-model="selectedNode.config.source" style="width: 100%">
+                  <el-option label="指定QQ的说说（可多条）" value="user" />
+                  <el-option label="好友动态流（可多条）" value="feeds" />
+                  <el-option label="单条动态详情（按 tid）" value="detail" />
+                </el-select>
+              </el-form-item>
+              <template v-if="selectedNode.config.source === 'detail'">
+                <el-form-item label="动态 ID（tid）">
+                  <el-input
+                    v-model="selectedNode.config.tid"
+                    v-var-drop
+                    placeholder="例如：{{qzone.items.0.tid}}"
+                  />
+                </el-form-item>
+                <el-form-item label="作者 QQ 号（留空=触发者）">
+                  <el-input
+                    v-model="selectedNode.config.uin"
+                    v-var-drop
+                    placeholder="例如：{{qzone.items.0.uin}}"
+                  />
+                </el-form-item>
+              </template>
+              <template v-else>
+                <el-form-item
+                  v-if="selectedNode.config.source === 'user'"
+                  label="目标 QQ 号（留空=触发者 / 机器人自己）"
+                >
+                  <el-input
+                    v-model="selectedNode.config.target_uin"
+                    v-var-drop
+                    placeholder="例如：10001 或 {{user_id}}"
+                  />
+                </el-form-item>
+                <el-form-item
+                  :label="selectedNode.config.source === 'user' ? '获取条数（1=只取最新一条）' : '获取条数'"
+                >
+                  <el-input-number
+                    v-model="selectedNode.config.num"
+                    :min="1"
+                    :max="100"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+                <el-form-item v-if="selectedNode.config.source === 'user'" label="起始位置（0=最新）">
+                  <el-input-number
+                    v-model="selectedNode.config.pos"
+                    :min="0"
+                    :max="10000"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+                <el-form-item v-else label="页码（从 1 开始）">
+                  <el-input-number
+                    v-model="selectedNode.config.page_num"
+                    :min="1"
+                    :max="1000"
+                    style="width: 100%"
+                  />
+                </el-form-item>
+              </template>
+              <el-form-item label="保存到变量">
+                <el-input v-model="selectedNode.config.var" placeholder="qzone" />
+              </el-form-item>
+              <el-alert type="info" :closable="false">
+                <div class="qzone-sample">
+                  <div class="qzone-sample-title">真实返回值（示例）</div>
+                  <pre v-pre>{
+  "ok": true,       // 是否成功
+  "count": 2,       // 取到几条
+  "total": 42,      // 说说总数
+  "error": "",      // 失败原因
+  "text": "…",      // 拼好的纯文本
+  "items": [        // 动态列表
+    {
+      "tid": "abc123",    // 动态 ID
+      "content": "今天拍到了晚霞",
+      "time": 1700000000, // 时间戳
+      "time_text": "2023-11-15 06:13",
+      "images": ["…/a.jpg"],
+      "comment_count": 2,
+      "like_count": 0,
+      "is_private": false,
+      "uin": 10001,       // 发布者 QQ
+      "nickname": "好友"  // 发布者昵称
+    }
+  ]
+}</pre>
+                  <div class="qzone-sample-foot">
+                    <div><code>total</code> 仅「说说列表」有；发布者 QQ / 昵称缺失时会自动向协议端补查。</div>
+                    <div>另有 <code>raw</code> 保留协议端原始返回（整包与每条各一份）。</div>
+                    <div>
+                      引用：<code v-pre>{{qzone.count}}</code>、<code v-pre>{{qzone.items.0.content}}</code>。
+                      依赖协议端（NapCat / SnowLuma）的空间接口，失败时流程不中断。
+                    </div>
+                  </div>
+                </div>
+              </el-alert>
+            </el-form>
+          </template>
+
           <!-- 会话 -->
           <template v-else-if="selectedNode.type === 'conversation_entry'">
             <el-form label-position="top" size="small">
@@ -503,6 +607,7 @@ import { ElMessage } from "element-plus";
 import {
   ArrowLeft,
   Back,
+  Camera,
   ChatDotRound,
   ChatLineRound,
   CircleClose,
@@ -591,6 +696,7 @@ const iconMap = {
   send_email: Message,
   code: Document,
   send: Promotion,
+  qzone: Camera,
   conversation_entry: MessageBox,
   collect: Key,
   choice: List,
@@ -808,6 +914,12 @@ function nodeSummary(node) {
       return (cfg.code || "").split("\n")[0] || "输入 Python 代码";
     case "send":
       return `${cfg.mode === "finish" ? "发送并结束" : "发送但继续"} · ${(cfg.messages || []).length} 条消息`;
+    case "qzone": {
+      const num = cfg.num || 1;
+      if (cfg.source === "detail") return `单条详情 · ${cfg.tid || "未指定 tid"}`;
+      if (cfg.source === "feeds") return `好友动态 · ${num} 条`;
+      return `${cfg.target_uin || "触发者"} 的说说 · ${num} 条`;
+    }
     case "conversation_entry":
       return cfg.session || "新会话";
     case "collect":
@@ -1668,7 +1780,8 @@ onBeforeUnmount(() => {
   border-left-color: #b37feb;
 }
 
-.node-card.send {
+.node-card.send,
+.node-card.qzone {
   border-left-color: #67c23a;
 }
 
@@ -1843,6 +1956,27 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--nb-text-secondary);
   margin: 8px 0 6px;
+}
+
+/* 「获取空间动态」的返回值示例：等宽小字，超宽自动折行 */
+.qzone-sample-title {
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.qzone-sample pre {
+  margin: 0;
+  font-family: "JetBrains Mono", Consolas, "Courier New", monospace;
+  font-size: 10.5px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: #4b5563;
+}
+
+.qzone-sample-foot > div {
+  margin-top: 4px;
 }
 
 .cond-row,

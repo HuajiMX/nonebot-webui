@@ -123,6 +123,20 @@ NODE_CATALOG = {
             "messages": [{"type": "text", "value": ""}],
         },
     },
+    "qzone": {
+        "category": "action",
+        "label": "获取空间动态",
+        "default": {
+            "source": "user",  # user（指定 QQ 的说说）| feeds（好友动态）| detail（单条详情）
+            "target_uin": "",  # 留空=触发者 / 机器人自己
+            "pos": 0,  # 起始位置，0 为最新
+            "num": 1,  # 获取条数，1=只取最新一条
+            "page_num": 1,  # feeds 模式页码
+            "tid": "",  # detail 模式：动态 ID
+            "uin": "",  # detail 模式：作者 QQ
+            "var": "qzone",
+        },
+    },
     # ---- 会话控制 ----
     "conversation_entry": {
         "category": "session",
@@ -199,8 +213,23 @@ def _validate_node_config(ntype: str, cfg: dict, node_id: str) -> None:
         _require_ident(cfg, "var", node_id, "item")
     elif ntype == "collect":
         _require_ident(cfg, "key", node_id, "reply")
-    elif ntype in ("api", "choice"):
-        _require_ident(cfg, "var", node_id, "api_resp" if ntype == "api" else "choice")
+    elif ntype in ("api", "choice", "qzone"):
+        default_var = {"api": "api_resp", "choice": "choice", "qzone": "qzone"}[ntype]
+        _require_ident(cfg, "var", node_id, default_var)
+        if ntype == "qzone":
+            source = str(cfg.get("source") or "user").strip().lower()
+            if source not in ("user", "feeds", "detail"):
+                raise ValueError(f"节点 {node_id} 的「获取方式」不合法")
+            for key, low, high in (("num", 1, 100), ("pos", 0, 10000), ("page_num", 1, 1000)):
+                raw = cfg.get(key)
+                if raw is None or raw == "":
+                    continue
+                try:
+                    value = int(raw)
+                except (TypeError, ValueError):
+                    raise ValueError(f"节点 {node_id} 的「{key}」必须是整数") from None
+                if not low <= value <= high:
+                    raise ValueError(f"节点 {node_id} 的「{key}」超出范围（{low}~{high}）")
     elif ntype == "listener_webhook":
         _require_ident(cfg, "var", node_id, "webhook")
         path = str(cfg.get("path") or "").strip()
@@ -858,6 +887,230 @@ async def _send(ctx: dict, msgs: list, target_cfg: Optional[dict] = None) -> Non
         nonebot.logger.warning(f"[可视化插件] 发送消息失败：{exc}")
 
 
+_QZONE_IMG_KEYS = ("url", "pic", "src", "picUrl", "pic_url", "origin_url", "image")
+
+
+def _qzone_item(raw: Any) -> dict:
+    """把不同协议端的说说 / 动态结构规整为统一字段。"""
+    if not isinstance(raw, dict):
+        return {}
+    content = raw.get("content")
+    if content is None:
+        content = raw.get("html") or raw.get("text") or raw.get("summary") or ""
+    content = re.sub(r"<[^>]+>", "", str(content or "")).replace("&nbsp;", " ").strip()
+    images = []
+    raw_images = raw.get("images") or raw.get("pics") or []
+    if isinstance(raw_images, (list, tuple)):
+        for item in raw_images:
+            if isinstance(item, str):
+                if item:
+                    images.append(item)
+            elif isinstance(item, dict):
+                for key in _QZONE_IMG_KEYS:
+                    if item.get(key):
+                        images.append(str(item[key]))
+                        break
+    try:
+        ts = int(raw.get("time") or raw.get("created_time") or 0)
+    except (TypeError, ValueError):
+        ts = 0
+    return {
+        "tid": str(raw.get("tid") or raw.get("key") or raw.get("id") or ""),
+        "uin": (
+            raw.get("uin")
+            or raw.get("user_id")
+            or raw.get("target_uin")
+            or raw.get("qq")
+        ),
+        "nickname": (
+            raw.get("nickname")
+            or raw.get("nick_name")
+            or raw.get("nick")
+            or raw.get("name")
+            or ""
+        ),
+        "content": content,
+        "time": ts,
+        "time_text": (
+            datetime.datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M") if ts else ""
+        ),
+        "images": images,
+        "comment_count": raw.get("comment_count", raw.get("comment_num", 0)) or 0,
+        "like_count": raw.get("like_count", raw.get("like_num", 0)) or 0,
+        "is_private": bool(raw.get("is_private", False)),
+        "raw": raw,
+    }
+
+
+def _qzone_uin(value: Any) -> Any:
+    """把 QQ 号规整为 int（不是纯数字时原样返回字符串）。"""
+    text = str(value or "").strip()
+    return int(text) if text.isdigit() else text
+
+
+async def _qzone_nickname(bot: Any, uin: Any, cache: dict) -> str:
+    """查询 QQ 昵称，用于补齐说说列表里缺失的发布者信息。
+
+    同一个 QQ 在一次获取里只查一次；任何失败都返回空串，不影响动态本身。
+    """
+    key = str(uin or "").strip()
+    if not key:
+        return ""
+    if key in cache:
+        return cache[key]
+    name = ""
+    if key.isdigit():
+        try:
+            info = await bot.call_api("get_stranger_info", user_id=int(key))
+            if isinstance(info, dict):
+                name = str(info.get("nickname") or info.get("nick") or "")
+        except Exception:  # noqa: BLE001
+            name = ""
+    cache[key] = name
+    return name
+
+
+def _qzone_text(items: list) -> str:
+    """把动态列表拼成便于直接发送的纯文本。"""
+    lines = []
+    for item in items:
+        content = str(item.get("content") or "").strip()
+        if len(content) > 200:
+            content = content[:200] + "…"
+        head = item.get("time_text") or ""
+        if item.get("nickname"):
+            head = f"{item['nickname']} {head}".strip()
+        line = f"【{head}】{content}" if head else content
+        if item.get("images"):
+            line += f"（{len(item['images'])} 张图）"
+        lines.append(line)
+    return "\\n".join(x for x in lines if x)
+
+
+async def _qzone_fetch(ctx: dict, cfg: dict) -> dict:
+    """获取 QQ 空间动态：指定 QQ 的说说 / 好友动态 / 单条详情。
+
+    依赖协议端（NapCat / SnowLuma 等）提供的 QQ 空间扩展接口。任何失败都
+    不抛异常，而是把原因写进返回值的 error 字段，避免中断整个流程。
+    """
+    source = str(cfg.get("source") or "user").strip().lower()
+    if source not in ("user", "feeds", "detail"):
+        source = "user"
+    result: dict = {
+        "ok": False,
+        "source": source,
+        "items": [],
+        "count": 0,
+        "total": 0,
+        "text": "",
+        "error": "",
+        "raw": None,
+    }
+    bot = _resolve_bot(ctx)
+    if bot is None:
+        result["error"] = "当前没有已连接的机器人"
+        nonebot.logger.warning("[可视化插件] 获取空间动态失败：%s", result["error"])
+        return result
+    data: Any = None
+    items: list = []
+    author_hint = ""  # 说说列表 / 单条详情接口不返回作者，用请求的 QQ 补齐
+    try:
+        if source == "detail":
+            tid = str(_tpl(cfg.get("tid") or "", ctx)).strip()
+            if not tid:
+                result["error"] = "未指定动态 ID（tid）"
+                return result
+            uin = str(_tpl(cfg.get("uin") or cfg.get("target_uin") or "", ctx)).strip()
+            if not uin:
+                uin = str(ctx.get("user_id") or ctx.get("bot_id") or "")
+            author_hint = uin
+            params = {"tid": tid}
+            if uin:
+                params["uin"] = uin
+            try:
+                data = await bot.call_api("get_qzone_msg_detail", **params)
+            except Exception:  # noqa: BLE001
+                data = None
+            if isinstance(data, dict):
+                msglist = data.get("msglist")
+                if isinstance(msglist, (list, tuple)):
+                    items = list(msglist)
+                elif data.get("tid") or data.get("content"):
+                    items = [data]
+            if not items and uin:
+                # 回退：从该用户的说说列表里按 tid 精确查找
+                try:
+                    data = await bot.call_api(
+                        "get_qzone_msg_list", target_uin=uin, pos=0, num=50
+                    )
+                    for item in (data or {}).get("msglist") or []:
+                        if str(item.get("tid") or item.get("key") or "") == tid:
+                            items = [item]
+                            break
+                except Exception:  # noqa: BLE001
+                    pass
+            if not items:
+                result["error"] = "未找到该动态（协议端可能不支持空间接口，或 tid 有误）"
+        else:
+            try:
+                num = max(1, min(100, int(cfg.get("num", 1))))
+            except (TypeError, ValueError):
+                num = 1
+            if source == "feeds":
+                try:
+                    page_num = max(1, int(cfg.get("page_num", 1)))
+                except (TypeError, ValueError):
+                    page_num = 1
+                data = await bot.call_api(
+                    "get_qzone_feeds", page_num=page_num, count=num
+                )
+                items = list((data or {}).get("feeds") or [])
+            else:
+                uin = str(_tpl(cfg.get("target_uin") or "", ctx)).strip()
+                if not uin:
+                    uin = str(ctx.get("user_id") or ctx.get("bot_id") or "")
+                if not uin:
+                    result["error"] = "未指定目标 QQ 号，且当前上下文里没有发送者"
+                    return result
+                author_hint = uin
+                try:
+                    pos = max(0, int(cfg.get("pos", 0)))
+                except (TypeError, ValueError):
+                    pos = 0
+                data = await bot.call_api(
+                    "get_qzone_msg_list", target_uin=uin, pos=pos, num=num
+                )
+                items = list((data or {}).get("msglist") or [])
+    except Exception as exc:  # noqa: BLE001
+        result["error"] = str(exc) or exc.__class__.__name__
+        nonebot.logger.warning("[可视化插件] 获取空间动态失败：%s", result["error"])
+        return result
+    normalized = [x for x in (_qzone_item(i) for i in items) if x]
+    if author_hint:
+        for one in normalized:
+            if not one.get("uin"):
+                one["uin"] = _qzone_uin(author_hint)
+    # 发布者昵称：协议端没返回时补查一次（同一 QQ 只查一次，失败留空）
+    nick_cache: dict = {}
+    for one in normalized:
+        if not one.get("nickname") and one.get("uin"):
+            one["nickname"] = await _qzone_nickname(bot, one["uin"], nick_cache)
+    total = (data or {}).get("total") if isinstance(data, dict) else None
+    try:
+        total = int(total)
+    except (TypeError, ValueError):
+        total = len(normalized)
+    result.update(
+        ok=True,
+        items=normalized,
+        count=len(normalized),
+        total=total,
+        text=_qzone_text(normalized),
+        raw=data,
+    )
+    return result
+
+
 def _code_scope(ctx: dict) -> dict:
     return {
         "ctx": ctx,
@@ -1113,6 +1366,12 @@ def _emit_step(node: dict, flow: dict) -> str:
             next_id = _next_in_flow(flow, nid, "next")
             if next_id:
                 lines.append(f"    await _step_{next_id}(ctx)")
+    elif ntype == "qzone":
+        var = (cfg.get("var") or "qzone").strip() or "qzone"
+        lines.append(f"    ctx[{_py_literal(var)}] = await _qzone_fetch(ctx, {_py_literal(cfg)})")
+        next_id = _next_in_flow(flow, nid, "next")
+        if next_id:
+            lines.append(f"    await _step_{next_id}(ctx)")
     elif ntype == "collect":
         key = cfg.get("key", "reply")
         prompt = cfg.get("prompt", "")
