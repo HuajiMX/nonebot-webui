@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-11-12
+
+### 新增
+
+- 可视化插件新增「获取空间动态」组件（「机器人」分类）：可获取指定 QQ 的说说列表、好友动态流（支持多条，条数 / 页码 / 起始位置可配），或按 `tid` 获取单条动态详情；结果统一存入变量（`items` / `count` / `total` / `text` / `error`），并支持通过 `{{变量.items.0.content}}` 在后续节点引用
+- 每条动态都会带上发布者信息（`uin` / `nickname`）：协议端没返回时按请求的 QQ 补齐，昵称缺失时自动补查
+
 ## [1.1.4] - 2026-10-25
 
 ### 修复
@@ -60,7 +67,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...HEAD
+[1.2.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.2...v1.1.3
 [1.1.2]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.1...v1.1.2
