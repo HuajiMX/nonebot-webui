@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [1.3.1] - 2026-11-13
+
+### 修复
+
+- 可视化插件「定时任务」的触发时间改为可**任意输入**（如 `09:07`），不再局限于固定步长的下拉选项；输入后失焦即生效
+
 ## [1.3.0] - 2026-11-13
 
 ### 改进
@@ -77,7 +83,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.1...HEAD
+[1.3.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.3...v1.1.4
