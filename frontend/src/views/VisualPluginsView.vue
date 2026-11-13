@@ -38,9 +38,10 @@
         <el-table-column label="更新时间" width="170">
           <template #default="{ row }">{{ fmtTime(row.updated_at) }}</template>
         </el-table-column>
-        <el-table-column label="操作" width="300" fixed="right">
+        <el-table-column label="操作" width="380" fixed="right">
           <template #default="{ row }">
             <el-button size="small" @click="$router.push(`/visual-plugins/${row.id}`)">编辑</el-button>
+            <el-button size="small" @click="openStorage(row)">数据</el-button>
             <el-button size="small" type="primary" plain @click="openInstall(row)">装配到机器人</el-button>
             <el-button size="small" type="danger" plain @click="confirmDelete(row)">删除</el-button>
           </template>
@@ -79,13 +80,89 @@
         <el-button type="primary" :loading="installing" @click="submitInstall">安装</el-button>
       </template>
     </el-dialog>
+
+    <!-- 数据存储 -->
+    <el-drawer v-model="storageVisible" :title="`数据存储 · ${storageRow?.name || ''}`" size="720px">
+      <div class="storage-head">
+        <div class="storage-left">
+          <el-select
+            v-if="storageBots.length > 1"
+            v-model="storageBotId"
+            size="small"
+            style="width: 170px"
+            @change="loadStorage"
+          >
+            <el-option v-for="b in storageBots" :key="b.bot_id" :label="b.bot_name" :value="b.bot_id" />
+          </el-select>
+          <span class="storage-meta">
+            {{ storageData.count }} 个键 · {{ fmtSize(storageData.size) }} / {{ fmtSize(storageData.limit_bytes) }}
+            <template v-if="storageData.mtime"> · 更新于 {{ storageData.mtime }}</template>
+          </span>
+        </div>
+        <div class="storage-actions">
+          <el-button size="small" :icon="Refresh" @click="loadStorage">刷新</el-button>
+          <el-button size="small" @click="openEdit(null)">新增键</el-button>
+          <el-button size="small" type="danger" plain @click="confirmClear">清空全部</el-button>
+        </div>
+      </div>
+
+      <el-table :data="storageData.items" v-loading="storageLoading" size="small" style="width: 100%">
+        <el-table-column prop="key" label="键" min-width="120" show-overflow-tooltip />
+        <el-table-column prop="type" label="类型" width="70" />
+        <el-table-column label="大小" width="70">
+          <template #default="{ row }">{{ fmtSize(row.size) }}</template>
+        </el-table-column>
+        <el-table-column prop="preview" label="值" min-width="150" show-overflow-tooltip />
+        <el-table-column prop="updated" label="更新时间" width="145" />
+        <el-table-column label="操作" width="120" fixed="right">
+          <template #default="{ row }">
+            <el-button size="small" text type="primary" @click="openEdit(row)">编辑</el-button>
+            <el-button size="small" text type="danger" @click="confirmDeleteKey(row)">删除</el-button>
+          </template>
+        </el-table-column>
+      </el-table>
+      <el-empty
+        v-if="!storageLoading && storageData.items.length === 0"
+        description="还没有数据。流程里用「数据存储」组件写入后，这里就能看到。"
+        :image-size="80"
+      />
+    </el-drawer>
+
+    <el-dialog
+      v-model="editVisible"
+      :title="editIsNew ? '新增键' : `编辑 · ${editForm.key}`"
+      width="560px"
+      :close-on-click-modal="false"
+    >
+      <el-form label-position="top">
+        <el-form-item label="键名">
+          <el-input
+            v-model="editForm.key"
+            :disabled="!editIsNew"
+            placeholder="中英文、数字、下划线、短横线，最多 64 个字符"
+          />
+        </el-form-item>
+        <el-form-item label="值（JSON）">
+          <el-input v-model="editForm.text" type="textarea" :rows="10" class="storage-editor" />
+        </el-form-item>
+      </el-form>
+      <el-alert
+        type="info"
+        :closable="false"
+        title="按 JSON 写：字符串要带引号，数字、true/false、null 原样写。"
+      />
+      <template #footer>
+        <el-button @click="editVisible = false">取消</el-button>
+        <el-button type="primary" :loading="editSaving" @click="saveEdit">保存</el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
 <script setup>
-import { onMounted, ref } from "vue";
+import { onMounted, reactive, ref } from "vue";
 import { ElMessage, ElMessageBox } from "element-plus";
-import { Plus } from "@element-plus/icons-vue";
+import { Plus, Refresh } from "@element-plus/icons-vue";
 import api from "../api";
 
 const plugins = ref([]);
@@ -100,6 +177,25 @@ const installVisible = ref(false);
 const installing = ref(false);
 const installBotId = ref("");
 let installPluginId = "";
+
+const storageVisible = ref(false);
+const storageLoading = ref(false);
+const storageRow = ref(null);
+const storageBots = ref([]);
+const storageBotId = ref("");
+const storageData = ref({
+  items: [],
+  count: 0,
+  size: 0,
+  limit_bytes: 0,
+  limit_keys: 0,
+  mtime: "",
+});
+
+const editVisible = ref(false);
+const editSaving = ref(false);
+const editIsNew = ref(false);
+const editForm = reactive({ key: "", text: "" });
 
 async function load() {
   loading.value = true;
@@ -194,6 +290,125 @@ async function confirmDelete(row) {
   }
 }
 
+function fmtSize(n) {
+  const v = Number(n) || 0;
+  if (v < 1024) return `${v} B`;
+  if (v < 1024 * 1024) return `${(v / 1024).toFixed(1)} KB`;
+  return `${(v / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function openStorage(row) {
+  const list = row.installed || [];
+  if (!list.length) {
+    ElMessage.info("先把这个插件装配到机器人，才会有存储数据");
+    return;
+  }
+  storageRow.value = row;
+  storageBots.value = list;
+  storageBotId.value = list[0].bot_id;
+  storageVisible.value = true;
+  await loadStorage();
+}
+
+async function loadStorage() {
+  if (!storageRow.value || !storageBotId.value) return;
+  storageLoading.value = true;
+  try {
+    storageData.value = await api.get(`/visual-plugins/${storageRow.value.id}/storage`, {
+      params: { bot_id: storageBotId.value },
+    });
+  } catch {
+    storageData.value = { items: [], count: 0, size: 0, limit_bytes: 0, limit_keys: 0, mtime: "" };
+  } finally {
+    storageLoading.value = false;
+  }
+}
+
+function openEdit(row) {
+  editIsNew.value = !row;
+  editForm.key = row ? row.key : "";
+  editForm.text = row ? row.json : "null";
+  editVisible.value = true;
+}
+
+async function saveEdit() {
+  const key = editForm.key.trim();
+  if (!key) {
+    ElMessage.warning("键名不能为空");
+    return;
+  }
+  let value;
+  try {
+    value = JSON.parse(editForm.text);
+  } catch (e) {
+    ElMessage.error(`值不是合法的 JSON：${e.message}`);
+    return;
+  }
+  editSaving.value = true;
+  try {
+    await api.put(`/visual-plugins/${storageRow.value.id}/storage`, {
+      bot_id: storageBotId.value,
+      key,
+      value,
+    });
+    ElMessage.success("已保存，机器人下次读写时生效");
+    editVisible.value = false;
+    await loadStorage();
+  } catch {
+    /* 拦截器已提示 */
+  } finally {
+    editSaving.value = false;
+  }
+}
+
+async function confirmDeleteKey(row) {
+  try {
+    await ElMessageBox.confirm(`确定删除键「${row.key}」？此操作不可恢复。`, "删除数据", {
+      type: "warning",
+      confirmButtonText: "删除",
+      cancelButtonText: "取消",
+    });
+  } catch {
+    return;
+  }
+  try {
+    await api.delete(
+      `/visual-plugins/${storageRow.value.id}/storage/${encodeURIComponent(row.key)}`,
+      { params: { bot_id: storageBotId.value } }
+    );
+    ElMessage.success("已删除");
+    await loadStorage();
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
+async function confirmClear() {
+  try {
+    await ElMessageBox.confirm(
+      "将删除该插件在此机器人上的全部存储数据，无法恢复。确定继续？",
+      "清空数据",
+      {
+        type: "warning",
+        confirmButtonText: "清空",
+        cancelButtonText: "取消",
+        confirmButtonClass: "el-button--danger",
+      }
+    );
+  } catch {
+    return;
+  }
+  try {
+    const result = await api.post(`/visual-plugins/${storageRow.value.id}/storage/clear`, {
+      bot_id: storageBotId.value,
+    });
+    ElMessage.success(`已清空 ${result.cleared} 个键`);
+    await loadStorage();
+  } catch {
+    /* 拦截器已提示 */
+  }
+}
+
 onMounted(load);
 </script>
 
@@ -208,6 +423,37 @@ onMounted(load);
   color: var(--nb-orange);
   font-weight: 500;
   cursor: pointer;
+}
+
+.storage-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+}
+
+.storage-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.storage-meta {
+  font-size: 12px;
+  color: var(--el-text-color-secondary, #909399);
+}
+
+.storage-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.storage-editor :deep(textarea) {
+  font-family: Consolas, Menlo, Monaco, monospace;
+  font-size: 12px;
+  line-height: 1.6;
 }
 
 </style>

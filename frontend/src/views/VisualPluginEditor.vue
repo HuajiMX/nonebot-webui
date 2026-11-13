@@ -399,6 +399,69 @@
             </el-form>
           </template>
 
+          <!-- 数据存储 -->
+          <template v-else-if="selectedNode.type === 'storage'">
+            <el-form label-position="top" size="small">
+              <el-form-item label="操作">
+                <el-select v-model="selectedNode.config.action" style="width: 100%">
+                  <el-option v-for="[value, label] in STORAGE_ACTIONS" :key="value" :label="label" :value="value" />
+                </el-select>
+              </el-form-item>
+              <el-form-item :label="storageKeyLabel(selectedNode.config.action)">
+                <el-input
+                  v-model="selectedNode.config.key"
+                  v-var-drop
+                  :placeholder="storageKeyPlaceholder(selectedNode.config.action)"
+                />
+              </el-form-item>
+              <el-form-item
+                v-if="['set', 'append'].includes(selectedNode.config.action)"
+                label="写入内容"
+              >
+                <el-input
+                  v-model="selectedNode.config.value"
+                  v-var-drop
+                  type="textarea"
+                  :rows="3"
+                  placeholder="要存的内容，可用变量插值；存数组/对象请打开下面的 JSON 开关"
+                />
+              </el-form-item>
+              <el-form-item
+                v-if="['set', 'append'].includes(selectedNode.config.action)"
+                label="按 JSON 解析"
+              >
+                <el-switch v-model="selectedNode.config.json" active-text="是" inactive-text="否" />
+                <div class="sub-label">存列表或对象时打开；关闭则整段当作字符串。</div>
+              </el-form-item>
+              <el-form-item v-if="selectedNode.config.action === 'incr'" label="每次增加">
+                <el-input v-model="selectedNode.config.value" placeholder="1" />
+              </el-form-item>
+              <el-form-item
+                v-if="['get', 'keys'].includes(selectedNode.config.action)"
+                label="保存到变量"
+              >
+                <el-input v-model="selectedNode.config.var" placeholder="store" />
+              </el-form-item>
+              <el-form-item v-if="selectedNode.config.action === 'get'" label="键不存在时的默认值">
+                <el-input v-model="selectedNode.config.fallback" v-var-drop placeholder="留空则为空值" />
+              </el-form-item>
+              <el-alert type="info" :closable="false">
+                <div class="alert-tip">
+                  <div>
+                    数据存在机器人插件目录的 <code>vplugin_store_*.json</code>，重启后仍在；
+                    插件列表里的「数据」可以查看、修改和清空。
+                  </div>
+                  <div class="alert-tip-gap" v-pre>
+                    键名可用 {{变量}} 拼，例如 count_{{group_id}}；只允许中英文、数字、下划线、短横线。
+                  </div>
+                  <div class="alert-tip-gap">
+                    单插件上限 2 MB / 2000 个键，追加列表最多保留 5000 项。
+                  </div>
+                </div>
+              </el-alert>
+            </el-form>
+          </template>
+
           <!-- 自定义代码 -->
           <template v-else-if="selectedNode.type === 'code'">
             <el-form label-position="top" size="small">
@@ -671,6 +734,7 @@ import {
   ChatDotRound,
   ChatLineRound,
   CircleClose,
+  Coin,
   Connection,
   Delete,
   Document,
@@ -694,8 +758,41 @@ const props = defineProps({ pluginId: { type: String, required: true } });
 // 自定义代码节点里可直接引用的名字（与生成的 _code_scope 保持一致）
 const CODE_NODE_VARS = [
   "msg", "segments", "sender", "user_id", "group_id", "system",
-  "bot", "event", "ctx", "state", "reply", "webhook",
+  "bot", "event", "ctx", "state", "store", "reply", "webhook",
 ];
+
+// 「数据存储」组件的操作文案，节点摘要与下拉共用
+const STORAGE_ACTIONS = [
+  ["set", "写入（存在则覆盖）"],
+  ["get", "读取"],
+  ["append", "追加到列表"],
+  ["incr", "自增计数"],
+  ["delete", "删除键"],
+  ["keys", "列出键名"],
+  ["clear", "清空全部"],
+];
+
+const STORAGE_SHORT = {
+  set: "写入",
+  get: "读取",
+  append: "追加",
+  incr: "自增",
+  delete: "删除",
+  keys: "列出",
+  clear: "清空",
+};
+
+function storageKeyLabel(action) {
+  if (action === "keys") return "键名前缀（留空=全部键）";
+  if (action === "clear") return "要清空的键（留空=全部清空）";
+  return "数据键名";
+}
+
+function storageKeyPlaceholder(action) {
+  if (action === "keys") return "例如 count_ , 留空列出全部";
+  if (action === "clear") return "留空清空全部数据";
+  return "例如 daily_count 或 count_{{group_id}}";
+}
 
 const NODE_W = 240;
 const NODE_H = 72;
@@ -704,6 +801,7 @@ const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "�
 // 任何触发方式都可用
 const ALWAYS_VARS = [
   { name: "state", desc: "全局变量，跨触发保留，如 {{state.last_tid}}" },
+  { name: "store", desc: "长期存储，如 {{store.键名}}" },
   { name: "bot_id", desc: "机器人 QQ 号" },
   { name: "bot_name", desc: "机器人名称" },
   { name: "system.cpu", desc: "CPU 占用百分比" },
@@ -772,6 +870,7 @@ const iconMap = {
   api: Connection,
   send_email: Message,
   code: Document,
+  storage: Coin,
   send: Promotion,
   qzone: Camera,
   conversation_entry: MessageBox,
@@ -997,6 +1096,12 @@ function nodeSummary(node) {
       return `${cfg.method || "GET"} ${cfg.url || "…"} → ${cfg.var || "api_resp"}`;
     case "send_email":
       return `${cfg.to || "系统收件邮箱"} · ${cfg.subject || "无主题"}`;
+    case "storage": {
+      const action = cfg.action || "set";
+      const key = cfg.key || (action === "keys" ? "全部" : action === "clear" ? "全部键" : "…");
+      const extra = ["get", "keys"].includes(action) && cfg.var ? ` → ${cfg.var}` : "";
+      return `${STORAGE_SHORT[action] || action} · ${key}${extra}`;
+    }
     case "code":
       return (cfg.code || "").split("\n")[0] || "输入 Python 代码";
     case "send":
@@ -1451,6 +1556,9 @@ const flowVars = computed(() => {
     if (n.type === "send_email") {
       set.add("email_sent");
       set.add("email_result");
+    }
+    if (n.type === "storage" && ["get", "keys"].includes(n.config.action)) {
+      set.add(n.config.var || "store");
     }
     if (n.type === "conversation_entry") {
       set.add("session");

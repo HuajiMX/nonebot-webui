@@ -38,6 +38,7 @@ backend/
   mailer.py           邮件服务：SMTP 配置存储（data/email.json）与发送
   notifier.py         系统通知：机器人断连 / 异常退出邮件提醒
   visual_plugin.py    可视化插件：流程校验、代码生成、NODE_CATALOG 组件目录（权威来源）
+  vplugin_store.py    可视化插件「数据存储」的面板侧读写（定位文件、跨进程文件锁、原子写）
   version_check.py    更新检查（30 分钟缓存，update_repo / update_url 可覆盖）
   folder_picker.py    选择系统文件夹
   routers/            auth / bots / plugins / logs / terminal / monitor / visual_plugins / update / settings
@@ -73,6 +74,10 @@ cd frontend; npm install; npm run build
 
 # 冒烟测试（服务已启动、管理员 admin/admin123 时）
 .\.venv\Scripts\python.exe scripts\visual_plugin_smoke.py
+
+# 纯后端回归（不需要服务）
+.\.venv\Scripts\python.exe scripts\visual_plugin_codegen_test.py
+.\.venv\Scripts\python.exe scripts\vplugin_store_test.py
 ```
 
 ## API 路由一览
@@ -83,7 +88,7 @@ cd frontend; npm install; npm run build
 | `/api/bots` | 机器人 CRUD、启停、插件列表/启停/上传（plugins、logs 也挂载在同前缀下） |
 | `/api/terminal` | 终端（WebSocket，连接需带 token 查询参数） |
 | `/api/monitor` | 系统监控数据 |
-| `/api/visual-plugins` | 可视化插件 CRUD、`/catalog` 组件目录、安装/卸载到机器人 |
+| `/api/visual-plugins` | 可视化插件 CRUD、`/catalog` 组件目录、安装/卸载到机器人；`/{id}/storage` 查看/改键/删键/清空长期存储 |
 | `/api/update` | `GET /status` 版本检查（`?force=true` 绕过缓存）、`GET /log` 更新进度日志、`POST /` 触发更新 |
 | `/api/settings` | `GET/PUT /email` 邮件（SMTP）配置、`POST /email/test` 发送测试邮件 |
 | `/api/health` | 健康检查 |
@@ -124,10 +129,12 @@ cd frontend; npm install; npm run build
 
 - **组件目录唯一权威来源是 `backend/visual_plugin.py` 的 `NODE_CATALOG`**；前端通过 `GET /api/visual-plugins/catalog` 获取，改组件必须同步修改 `generate_code()` 的代码生成逻辑。
 - 「定时任务」（`schedule`）除 `interval` 外有三种定点模式，字段为 **`times: ["09:00", ...]`（可多个）**、`weekdays: [0-6]`（可多选，0=周一）、`day`（每月几号，小月按月末），另可开 `run_on_start` 启动即跑一次；生成代码用 `_schedule_next()` 取下一个触发点，并给每轮注入 `ctx["trigger"]`（`time`/`date`/`clock`/`weekday`/`weekday_index`/`mode`/`run_count`）。旧的单值 `time`/`weekday` 由 `_normalize_schedule_config()` 在 `_migrate_flow` 与前端加载时自动升级，**改这里必须同时兼容旧数据**。
-- 当前分类（前端显示名）：触发方式（群聊/私信监听、WebHook、定时任务）、基本组件（条件判断、循环遍历、自定义代码）、功能（API 请求、发送邮件）、机器人（发送消息、获取空间动态）、会话控制（会话入口、信息收集、选项交互、循环结束、会话结束）。
+- 当前分类（前端显示名）：触发方式（群聊/私信监听、WebHook、定时任务）、基本组件（条件判断、循环遍历、自定义代码）、功能（API 请求、发送邮件、数据存储）、机器人（发送消息、获取空间动态）、会话控制（会话入口、信息收集、选项交互、循环结束、会话结束）。
 - 「获取空间动态」（`qzone`）依赖协议端扩展接口：`get_qzone_msg_list`（指定 QQ 的说说，`target_uin`/`pos`/`num`）、`get_qzone_feeds`（好友动态，`page_num`/`count`）、`get_qzone_msg_detail`（单条，`tid`/`uin`，失败时回退到列表按 tid 查找）。结果统一规整为 `ok`/`items`/`count`/`total`/`text`/`error` 写入变量（默认 `qzone`）；协议端不支持时只写 `error`，不抛异常中断流程。**只有一个这类组件**（三种取法由 `source` 切换，刻意不拆成多个节点）；发布者信息 `uin`/`nickname` 由请求的 QQ 补齐、昵称缺失时用 `get_stranger_info` 补查（同一 QQ 每次只查一次，失败留空）。
 - 配对约束：**循环遍历 ↔ 循环结束**、**会话入口 ↔ 会话结束** 成对出现，自动创建配对节点，左侧用不可删除的线条连接，删除其一则同删。
-- **`ctx` 与 `state` 的分工（改代码节点相关逻辑必须守住）**：`ctx` 是单次执行的作用域，每次触发（含每次定时任务）都 `_build_ctx()` 新建，写入的值流程结束即丢；`state` 是**全局变量**，模块级 `_STATE` 在导入时从 `<插件目录>/vplugin_state_<模块名>.json` 读取，`_exec_code` 执行完在 `finally` 里比对指纹后原子写回（`os.replace`），因此跨触发、跨机器人重启都在。自定义代码里 `state["k"] = v` 写入、下游用 `{{state.k}}` 引用；`state` 已列入 `RESERVED_VARS`，节点变量名不能占用。
+- **`ctx`、`state`、`store` 三者分工（改代码节点相关逻辑必须守住）**：`ctx` 是单次执行的作用域，每次触发（含每次定时任务）都 `_build_ctx()` 新建，写入的值流程结束即丢；`state` 是**全局变量**，模块级 `_STATE` 在导入时从 `<插件目录>/vplugin_state_<模块名>.json` 读取，`_exec_code` 执行完在 `finally` 里比对指纹后原子写回（`os.replace`），因此跨触发、跨机器人重启都在。自定义代码里 `state["k"] = v` 写入、下游用 `{{state.k}}` 引用；`state` 已列入 `RESERVED_VARS`，节点变量名不能占用。
+- 「数据存储」（`storage`）是**面向节点用户的长期存储**，与 `state` 是两套东西：数据在 `<插件目录>/vplugin_store_<模块名>.json`，结构 `{"version":1,"items":{键:{"v":值,"t":"时间"}}}`。`action` 取 `set`/`get`/`append`/`incr`/`delete`/`keys`/`clear`；键名支持 `{{模板}}`，固定键名只允许中英文/数字/下划线/短横线且**不能含点号**（模板点路径 `{{store.a.b}}` 靠点分段）；`json` 开关决定写入值是否按 JSON 解析。上限 2 MB / 2000 键、`append` 单键最多 5000 项，超限抛错回滚（`_store_commit` 里恢复旧值）。`store` 已列入 `RESERVED_VARS`，`_code_scope` 与 `ctx` 都会暴露 `store` 对象（`store.set/get/incr/append/keys/delete/clear`）。
+- **存储的并发规矩（面板能改同一个文件，改动前先读这段）**：机器人侧 `_store_get/keys` 每次先 `stat` 比对 mtime，变了就重载；所有写操作在 `_STORE_LOCK`（线程锁）+ `_StoreFileLock`（对 `<文件>.lock` 加 `fcntl`/`msvcrt` 排他锁）里**重新读盘 → 只改目标键 → tmp + `os.replace` 原子替换**。面板侧 `backend/vplugin_store.py` 用同一套锁文件与同样的读改写流程，因此两边不会互相覆盖。**不要改成「内存全量覆盖写」**，那会在定时任务并发或面板编辑时丢数据。
 - 会话按「群号 + QQ 号」创建/复用存储；`session` 变量访问会话内收集的数据；`sender` 仅在消息监听节点下游可用。
 - 编辑器的「更新插件」= 保存后自动重新装配到已安装的机器人，不展示生成的 py 代码。
 - 生成的文件名为 `vplugin_xxxx.py`，但代码内声明 `PLUGIN_NAME = "真实名称"`；插件列表解析该字段展示显示名（`display_name`），并据模块名前缀标记 `is_visual`（前端显示「可视化」胶囊），启停等操作仍按模块名（`name`）进行。

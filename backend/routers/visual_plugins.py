@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
-from typing import Dict, Optional
+from typing import Any, Dict, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from .. import vplugin_store
 from ..bot_manager import bot_manager
 from ..deps import current_user
 from ..process_manager import process_manager
@@ -41,6 +42,16 @@ class UpdateRequest(BaseModel):
 
 
 class InstallRequest(BaseModel):
+    bot_id: str
+
+
+class StorageWriteRequest(BaseModel):
+    bot_id: str
+    key: str
+    value: Any = None
+
+
+class StorageClearRequest(BaseModel):
     bot_id: str
 
 
@@ -155,3 +166,60 @@ def uninstall(plugin_id: str, data: InstallRequest, _: str = Depends(current_use
                 status_code=500, detail=f"插件已移除，但重启失败：{exc}"
             ) from exc
     return {**result, "restarted": restarted}
+
+
+# ---------------------------------------------------------------------------
+# 数据存储：查看 / 改单个键 / 删单个键 / 清空
+# ---------------------------------------------------------------------------
+
+
+def _store_module(plugin_id: str) -> str:
+    plugin = _get(plugin_id)
+    if not plugin.module:
+        raise HTTPException(status_code=400, detail="该插件还没有生成代码模块")
+    return plugin.module
+
+
+@router.get("/{plugin_id}/storage")
+def read_storage(plugin_id: str, bot_id: str, _: str = Depends(current_user)) -> dict:
+    module = _store_module(plugin_id)
+    try:
+        return vplugin_store.read_store(bot_id, module)
+    except vplugin_store.StoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+
+
+@router.put("/{plugin_id}/storage")
+def write_storage(
+    plugin_id: str, data: StorageWriteRequest, _: str = Depends(current_user)
+) -> dict:
+    module = _store_module(plugin_id)
+    try:
+        item = vplugin_store.write_key(data.bot_id, module, data.key, data.value)
+    except vplugin_store.StoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "item": item}
+
+
+@router.delete("/{plugin_id}/storage/{key}")
+def delete_storage(
+    plugin_id: str, key: str, bot_id: str, _: str = Depends(current_user)
+) -> dict:
+    module = _store_module(plugin_id)
+    try:
+        removed = vplugin_store.delete_key(bot_id, module, key)
+    except vplugin_store.StoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "removed": removed}
+
+
+@router.post("/{plugin_id}/storage/clear")
+def clear_storage(
+    plugin_id: str, data: StorageClearRequest, _: str = Depends(current_user)
+) -> dict:
+    module = _store_module(plugin_id)
+    try:
+        count = vplugin_store.clear_store(data.bot_id, module)
+    except vplugin_store.StoreError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from None
+    return {"ok": True, "cleared": count}

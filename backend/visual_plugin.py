@@ -120,6 +120,18 @@ NODE_CATALOG = {
         "label": "自定义代码",
         "default": {"code": ""},
     },
+    "storage": {
+        "category": "feature",
+        "label": "数据存储",
+        "default": {
+            "action": "set",  # set | get | delete | append | incr | keys | clear
+            "key": "",  # 键名，支持 {{模板}}
+            "value": "",  # set / append 的写入值，支持 {{模板}}
+            "json": False,  # 写入值按 JSON 解析（存数组 / 对象时必须开）
+            "var": "store",  # get / keys 的结果变量
+            "fallback": "",  # get 未命中时的默认值
+        },
+    },
     # ---- 机器人动作 ----
     "send": {
         "category": "action",
@@ -174,6 +186,12 @@ NODE_CATALOG = {
     },
 }
 
+# 「数据存储」组件支持的操作，顺序即前端下拉顺序
+STORAGE_ACTIONS = ("set", "get", "append", "incr", "delete", "keys", "clear")
+
+# 固定键名的字符集约束（含模板的键名留到运行时再判断）
+STORAGE_KEY_RE = re.compile(r"^[\w\-\u4e00-\u9fff]{1,64}$")
+
 CONDITION_OPS = {
     "contains": "包含",
     "not_contains": "不包含",
@@ -205,8 +223,8 @@ MESSAGE_TYPES = {
 # 生成代码中作为标识符使用的字段必须匹配该正则，防止流程数据注入任意 Python
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# 保留变量名：state 是跨触发保留的全局变量，不能被节点当作普通变量名占用
-RESERVED_VARS = frozenset({"state"})
+# 保留变量名：state 是跨触发保留的全局变量，store 是长期存储接口，不能被节点当作普通变量名占用
+RESERVED_VARS = frozenset({"state", "store"})
 
 # 定时任务的触发时间格式（HH:MM，允许 9:00 这种单位数小时）
 TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
@@ -245,6 +263,22 @@ def _validate_node_config(ntype: str, cfg: dict, node_id: str) -> None:
                     raise ValueError(f"节点 {node_id} 的「{key}」必须是整数") from None
                 if not low <= value <= high:
                     raise ValueError(f"节点 {node_id} 的「{key}」超出范围（{low}~{high}）")
+    elif ntype == "storage":
+        action = str(cfg.get("action") or "set").strip().lower()
+        if action not in STORAGE_ACTIONS:
+            raise ValueError(f"节点 {node_id} 的「操作」不合法")
+        if action in ("get", "keys"):
+            _require_ident(cfg, "var", node_id, "store")
+        key = str(cfg.get("key") or "").strip()
+        if action not in ("clear", "keys") and not key:
+            raise ValueError(f"节点 {node_id} 的「数据键名」不能为空")
+        if len(key) > 200:
+            raise ValueError(f"节点 {node_id} 的「数据键名」过长（不超过 200 字符）")
+        if key and "{{" not in key and not STORAGE_KEY_RE.match(key):
+            raise ValueError(
+                f"节点 {node_id} 的「数据键名」只能包含中英文、数字、下划线、短横线，"
+                "最多 64 个字符（也不允许出现点号）"
+            )
     elif ntype == "schedule":
         mode = str(cfg.get("mode") or "interval").strip().lower()
         if mode not in ("interval", "daily", "weekly", "monthly"):
@@ -534,6 +568,7 @@ import re
 import smtplib
 import ssl
 import subprocess
+import threading
 import time
 from email.message import EmailMessage
 from email.utils import formataddr
@@ -617,6 +652,339 @@ def _state_save() -> None:
     _STATE_SAVED_FP = fingerprint
 
 
+# ---------- 长期存储：跨触发、跨重启保留，面板可读写 ----------
+try:
+    import fcntl  # Linux / macOS
+except ImportError:  # pragma: no cover - Windows
+    fcntl = None
+try:
+    import msvcrt  # Windows
+except ImportError:  # pragma: no cover - 非 Windows
+    msvcrt = None
+
+STORE_LIMIT_BYTES = 2 * 1024 * 1024
+STORE_LIMIT_KEYS = 2000
+STORE_APPEND_LIMIT = 5000
+# 键名不能含点：模板里的点路径（{{store.a.b}}）靠点分段
+STORE_KEY_RE = re.compile(r"^[\\w\\-\\u4e00-\\u9fff]{1,64}$")
+
+
+def _store_path() -> str:
+    base = os.path.dirname(os.path.abspath(globals().get("__file__") or "."))
+    return os.path.join(base, f"vplugin_store_{PLUGIN_MODULE}.json")
+
+
+class _StoreFileLock:
+    """跨进程文件锁：面板改数据与机器人写数据撞车时互斥。
+
+    拿不到锁也继续执行，靠写入后的 mtime 比对兜底，不让存储操作把流程卡死。
+    """
+
+    def __init__(self, path: str):
+        self._path = path
+        self._fh = None
+
+    def __enter__(self):
+        try:
+            self._fh = open(self._path, "a+b")
+        except OSError:
+            self._fh = None
+            return self
+        try:
+            if fcntl is not None:
+                fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                self._fh.seek(0)
+                msvcrt.locking(self._fh.fileno(), msvcrt.LK_LOCK, 1)
+        except OSError:
+            pass
+        return self
+
+    def __exit__(self, *exc_info):
+        try:
+            if self._fh is not None:
+                if fcntl is not None:
+                    fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    self._fh.seek(0)
+                    msvcrt.locking(self._fh.fileno(), msvcrt.LK_UNLCK, 1)
+        except OSError:
+            pass
+        finally:
+            if self._fh is not None:
+                try:
+                    self._fh.close()
+                except OSError:
+                    pass
+                self._fh = None
+        return False
+
+
+_STORE: Dict[str, dict] = {}
+_STORE_MTIME: float = -1.0
+_STORE_LOCK = threading.RLock()
+
+
+def _store_stat_mtime() -> float:
+    try:
+        return os.path.getmtime(_store_path())
+    except OSError:
+        return -1.0
+
+
+def _store_load_locked() -> None:
+    """从磁盘读入内存；面板刚改过文件时靠它跟上，避免整份覆盖别人的改动。"""
+    global _STORE, _STORE_MTIME
+    data: Dict[str, dict] = {}
+    try:
+        with open(_store_path(), encoding="utf-8") as fp:
+            raw = json.load(fp)
+        if isinstance(raw, dict) and isinstance(raw.get("items"), dict):
+            data = {k: v for k, v in raw["items"].items() if isinstance(v, dict)}
+    except (OSError, ValueError):
+        data = {}
+    _STORE = data
+    _STORE_MTIME = _store_stat_mtime()
+
+
+def _store_reload_if_stale() -> None:
+    if _store_stat_mtime() != _STORE_MTIME:
+        _store_load_locked()
+
+
+def _store_flush_locked() -> None:
+    global _STORE_MTIME
+    path = _store_path()
+    payload = {"version": 1, "items": _STORE}
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as fp:
+            json.dump(payload, fp, ensure_ascii=False, indent=2, default=str)
+        os.replace(path + ".tmp", path)
+    except (OSError, TypeError, ValueError) as exc:  # noqa: BLE001
+        nonebot.logger.warning(f"[可视化插件] 存储写入失败：{exc}")
+        return
+    _STORE_MTIME = _store_stat_mtime()
+
+
+def _store_key(key: Any) -> str:
+    text = str(key if key is not None else "").strip()
+    if not text:
+        raise ValueError("存储键名不能为空")
+    if not STORE_KEY_RE.match(text):
+        raise ValueError(f"存储键名「{text}」不合法：只能包含中英文、数字、下划线、短横线，最多 64 个字符")
+    return text
+
+
+def _store_now() -> str:
+    return datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _store_check_limits() -> None:
+    if len(_STORE) > STORE_LIMIT_KEYS:
+        raise ValueError(f"存储键数量已达上限 {STORE_LIMIT_KEYS} 个，请清理不再需要的数据")
+    try:
+        text = json.dumps(_STORE, ensure_ascii=False, default=str)
+    except (TypeError, ValueError):
+        return
+    if len(text.encode("utf-8")) > STORE_LIMIT_BYTES:
+        raise ValueError(
+            f"存储占用超过上限 {STORE_LIMIT_BYTES // 1024} KB，请清理不再需要的数据"
+        )
+
+
+def _store_commit(key: str, item: dict) -> None:
+    """在已持有内存锁与文件锁的前提下落盘；超限则回滚，不留下半截脏数据。"""
+    previous = _STORE.get(key)
+    _STORE[key] = item
+    try:
+        _store_check_limits()
+    except ValueError:
+        if previous is None:
+            _STORE.pop(key, None)
+        else:
+            _STORE[key] = previous
+        raise
+    _store_flush_locked()
+
+
+def _store_get(key: Any, default: Any = None) -> Any:
+    text = _store_key(key)
+    with _STORE_LOCK:
+        _store_reload_if_stale()
+        item = _STORE.get(text)
+    if not isinstance(item, dict):
+        return default
+    return item.get("v", default)
+
+
+def _store_set(key: Any, value: Any) -> Any:
+    text = _store_key(key)
+    with _STORE_LOCK:
+        with _StoreFileLock(_store_path() + ".lock"):
+            _store_load_locked()
+            _store_commit(text, {"v": value, "t": _store_now()})
+    return value
+
+
+def _store_delete(key: Any) -> bool:
+    text = _store_key(key)
+    with _STORE_LOCK:
+        with _StoreFileLock(_store_path() + ".lock"):
+            _store_load_locked()
+            removed = _STORE.pop(text, None) is not None
+            if removed:
+                _store_flush_locked()
+    return removed
+
+
+def _store_append(key: Any, item: Any, limit: int = STORE_APPEND_LIMIT) -> list:
+    text = _store_key(key)
+    with _STORE_LOCK:
+        with _StoreFileLock(_store_path() + ".lock"):
+            _store_load_locked()
+            current = _STORE.get(text) or {}
+            items = current.get("v")
+            items = list(items) if isinstance(items, list) else []
+            items.append(item)
+            if limit and len(items) > limit:
+                items = items[-limit:]
+            _store_commit(text, {"v": items, "t": _store_now()})
+    return items
+
+
+def _store_incr(key: Any, delta: Any = 1) -> int:
+    text = _store_key(key)
+    try:
+        step = int(delta)
+    except (TypeError, ValueError):
+        step = 1
+    with _STORE_LOCK:
+        with _StoreFileLock(_store_path() + ".lock"):
+            _store_load_locked()
+            current = _STORE.get(text) or {}
+            try:
+                value = int(current.get("v") or 0) + step
+            except (TypeError, ValueError):
+                value = step
+            _store_commit(text, {"v": value, "t": _store_now()})
+    return value
+
+
+def _store_keys(prefix: Any = "") -> list:
+    text = str(prefix if prefix is not None else "")
+    with _STORE_LOCK:
+        _store_reload_if_stale()
+        return sorted(k for k in _STORE if k.startswith(text))
+
+
+def _store_clear(key: Any = "") -> bool:
+    text = str(key if key is not None else "").strip()
+    with _STORE_LOCK:
+        with _StoreFileLock(_store_path() + ".lock"):
+            _store_load_locked()
+            if text:
+                removed = _STORE.pop(_store_key(text), None) is not None
+            else:
+                removed = bool(_STORE)
+                _STORE.clear()
+            if removed:
+                _store_flush_locked()
+    return removed
+
+
+def _store_value(value: Any, json_mode: bool) -> Any:
+    """节点里填的写入值：开了 JSON 开关就按字面量解析（存数组/对象要用它）。"""
+    if not json_mode or not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except ValueError:
+        return value
+
+
+def _store_node(action: str, key: Any, value: Any, json_mode: bool = False, fallback: Any = None) -> Any:
+    """节点调用的统一入口：出错只记日志，不中断整条流程。"""
+    try:
+        if action == "set":
+            return _store_set(key, _store_value(value, json_mode))
+        if action == "get":
+            return _store_get(key, fallback)
+        if action == "delete":
+            return _store_delete(key)
+        if action == "append":
+            return _store_append(key, _store_value(value, json_mode))
+        if action == "incr":
+            return _store_incr(key, value)
+        if action == "keys":
+            return _store_keys(key)
+        if action == "clear":
+            return _store_clear(key)
+    except Exception as exc:  # noqa: BLE001
+        nonebot.logger.warning(f"[可视化插件] 存储操作失败（{action}）：{exc}")
+    return fallback
+
+
+def _store_expr(expr: Any, ctx: dict, json_mode: bool = False) -> Any:
+    """节点写入值：整串就是一个 {{变量}} 时取原值（保留 list/dict），否则按模板渲染。"""
+    text = str(expr if expr is not None else "")
+    stripped = text.strip()
+    if stripped.startswith("{{") and stripped.endswith("}}"):
+        raw = _resolve(ctx, stripped[2:-2].strip())
+        if json_mode:
+            return raw
+        return "" if raw is None else str(raw)
+    return _store_value(_tpl(text, ctx), json_mode)
+
+
+class _StoreProxy:
+    """自定义代码里的存储接口：store.set("k", 1) / store.get("k") / store.incr("k")。"""
+
+    limit_bytes = STORE_LIMIT_BYTES
+    limit_keys = STORE_LIMIT_KEYS
+
+    def get(self, key: Any, default: Any = None) -> Any:
+        return _store_get(key, default)
+
+    def set(self, key: Any, value: Any) -> Any:
+        return _store_set(key, value)
+
+    def delete(self, key: Any) -> bool:
+        return _store_delete(key)
+
+    def append(self, key: Any, item: Any, limit: int = STORE_APPEND_LIMIT) -> list:
+        return _store_append(key, item, limit)
+
+    def incr(self, key: Any, delta: Any = 1) -> int:
+        return _store_incr(key, delta)
+
+    def keys(self, prefix: Any = "") -> list:
+        return _store_keys(prefix)
+
+    def clear(self) -> bool:
+        return _store_clear()
+
+    def items(self) -> Dict[str, Any]:
+        with _STORE_LOCK:
+            _store_reload_if_stale()
+            return {k: v.get("v") for k, v in _STORE.items()}
+
+    def __contains__(self, key: Any) -> bool:
+        try:
+            return _store_key(key) in self.items()
+        except ValueError:
+            return False
+
+    def __repr__(self) -> str:
+        return f"<store {_store_path()}>"
+
+
+store = _StoreProxy()
+_store_load_locked()
+
+
 _SAFE_BUILTINS = {
     "range": range,
     "list": list,
@@ -636,6 +1004,8 @@ def _resolve(ctx: dict, name: str) -> Any:
     for part in name.replace("[", ".").replace("]", "").split("."):
         if obj is None:
             return None
+        if isinstance(obj, _StoreProxy):
+            obj = obj.items()
         if isinstance(obj, dict):
             obj = obj.get(part)
         elif isinstance(obj, (list, tuple)) and part.isdigit():
@@ -648,7 +1018,7 @@ def _resolve(ctx: dict, name: str) -> Any:
     return obj
 
 
-_VAR_RE = re.compile(r"\\{\\{\\s*([A-Za-z_][\\w.\\[\\]0-9]*)\\s*\\}\\}")
+_VAR_RE = re.compile(r"\\{\\{\\s*([A-Za-z_\\u4e00-\\u9fff][\\w.\\[\\]0-9]*)\\s*\\}\\}")
 
 
 def _tpl(s: Any, ctx: dict) -> Any:
@@ -912,6 +1282,7 @@ def _build_ctx(bot: Optional[Bot], event: Optional[Event], webhook: Optional[dic
     ctx["reply"] = None
     ctx["webhook"] = webhook or {}
     ctx["state"] = _STATE
+    ctx["store"] = store
     return ctx
 
 
@@ -1257,6 +1628,7 @@ def _code_scope(ctx: dict) -> dict:
         "reply": ctx.get("reply"),
         "webhook": ctx.get("webhook"),
         "state": _STATE,
+        "store": store,
         "print": print,
         "json": json,
         "time": time,
@@ -1528,6 +1900,38 @@ def _emit_step(node: dict, flow: dict) -> str:
             f"    await _send_email(ctx, {_py_literal(to)}, {_py_literal(subject)}, "
             f"{_py_literal(body)}, {_py_literal(html)})"
         )
+        next_id = _next_in_flow(flow, nid, "next")
+        if next_id:
+            lines.append(f"    await _step_{next_id}(ctx)")
+    elif ntype == "storage":
+        action = str(cfg.get("action") or "set").strip().lower()
+        key = cfg.get("key", "")
+        value = cfg.get("value", "")
+        fallback = cfg.get("fallback", "")
+        json_mode = bool(cfg.get("json", False))
+        var = (cfg.get("var") or "store").strip() or "store"
+        key_expr = f"_tpl({_py_literal(key)}, ctx)"
+        if action == "get":
+            lines.append(
+                f"    ctx[{_py_literal(var)}] = _store_node('get', {key_expr}, None, False, "
+                f"_store_expr({_py_literal(fallback)}, ctx, {_py_literal(json_mode)}))"
+            )
+        elif action == "keys":
+            lines.append(f"    ctx[{_py_literal(var)}] = _store_node('keys', {key_expr})")
+        elif action in ("set", "append"):
+            lines.append(
+                f"    _store_node({_py_literal(action)}, {key_expr}, "
+                f"_store_expr({_py_literal(value)}, ctx, {_py_literal(json_mode)}), False)"
+            )
+        elif action == "incr":
+            lines.append(
+                f"    _store_node('incr', {key_expr}, "
+                f"_store_expr({_py_literal(value)}, ctx, False))"
+            )
+        elif action == "delete":
+            lines.append(f"    _store_node('delete', {key_expr}, None, False)")
+        else:
+            lines.append(f"    _store_node('clear', {key_expr}, None, False)")
         next_id = _next_in_flow(flow, nid, "next")
         if next_id:
             lines.append(f"    await _step_{next_id}(ctx)")
