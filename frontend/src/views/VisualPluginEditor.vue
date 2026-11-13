@@ -332,16 +332,19 @@
                 <el-input-number v-model="selectedNode.config.interval" :min="1" :max="86400" style="width: 100%" />
               </el-form-item>
               <template v-else>
-                <el-form-item label="触发时间（可添加多个）">
+                <el-form-item label="触发时间（可添加多个，支持任意 HH:mm）">
                   <div class="time-list">
                     <div v-for="(t, idx) in selectedNode.config.times" :key="idx" class="time-row">
-                      <el-time-select
-                        v-model="selectedNode.config.times[idx]"
-                        start="00:00"
-                        end="23:45"
-                        step="00:15"
-                        placeholder="选择时间"
+                      <el-time-picker
+                        :model-value="selectedNode.config.times[idx]"
+                        format="HH:mm"
+                        value-format="HH:mm"
+                        :clearable="false"
+                        :editable="true"
+                        arrow-control
+                        placeholder="例如 09:07"
                         style="flex: 1"
+                        @update:model-value="(val) => setTime(idx, val)"
                       />
                       <el-button
                         text
@@ -1002,6 +1005,25 @@ function nodeSummary(node) {
 function setWeekdays(list) {
   if (!selectedNode.value) return;
   selectedNode.value.config.weekdays = [...list];
+}
+
+// 把时间转成 HH:mm（el-time-picker 可能回传 Date 或字符串）
+function toHm(val) {
+  if (!val) return "";
+  if (val instanceof Date) {
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${pad(val.getHours())}:${pad(val.getMinutes())}`;
+  }
+  const m = String(val).match(/^(\d{1,2}):(\d{1,2})/);
+  if (!m) return String(val);
+  return `${String(m[1]).padStart(2, "0")}:${String(m[2]).padStart(2, "0")}`;
+}
+
+function setTime(index, val) {
+  if (!selectedNode.value) return;
+  const times = selectedNode.value.config.times;
+  if (!Array.isArray(times)) return;
+  times[index] = toHm(val);
 }
 
 // 兼容旧数据：把单值 time / weekday 升级为 times / weekdays
