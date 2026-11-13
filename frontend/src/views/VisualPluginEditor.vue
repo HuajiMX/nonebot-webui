@@ -426,6 +426,11 @@
                     <code>state["last_tid"] = "…"</code> 是<b>全局变量</b>，会存盘，
                     下次触发／重启后仍在，下游用 <code v-pre>{{state.last_tid}}</code> 引用。
                   </div>
+                  <div class="alert-tip-gap">
+                    代码里<b>不会做</b> <code v-pre>{{变量}}</code> 插值——那是消息和文本框的语法，
+                    写进代码会被当成 Python 代码而报错；取上游的值直接写变量名，或
+                    <code>ctx["名"]</code>。
+                  </div>
                 </div>
               </el-alert>
             </el-form>

@@ -1141,7 +1141,7 @@ async def _qzone_fetch(ctx: dict, cfg: dict) -> dict:
     bot = _resolve_bot(ctx)
     if bot is None:
         result["error"] = "当前没有已连接的机器人"
-        nonebot.logger.warning("[可视化插件] 获取空间动态失败：%s", result["error"])
+        nonebot.logger.warning("[可视化插件] 获取空间动态失败：{}", result["error"])
         return result
     data: Any = None
     items: list = []
@@ -1215,7 +1215,7 @@ async def _qzone_fetch(ctx: dict, cfg: dict) -> dict:
                 items = list((data or {}).get("msglist") or [])
     except Exception as exc:  # noqa: BLE001
         result["error"] = str(exc) or exc.__class__.__name__
-        nonebot.logger.warning("[可视化插件] 获取空间动态失败：%s", result["error"])
+        nonebot.logger.warning("[可视化插件] 获取空间动态失败：{}", result["error"])
         return result
     normalized = [x for x in (_qzone_item(i) for i in items) if x]
     if author_hint:
@@ -1275,7 +1275,19 @@ def _exec_code(code: str, ctx: dict) -> None:
         if isinstance(k, str) and k.isidentifier():
             scope.setdefault(k, v)
     try:
-        exec(compile(code, f"<visual-plugin:{PLUGIN_MODULE}>", "exec"), scope)
+        compiled = compile(code, f"<visual-plugin:{PLUGIN_MODULE}>", "exec")
+    except SyntaxError as exc:
+        # 语法错误在「更新插件」时就会被拦下；这里是兜底，给出能定位的信息
+        where = "第 {} 行 {}".format(exc.lineno or "?", exc.msg)
+        snippet = (exc.text or "").strip()
+        nonebot.logger.warning(
+            "[可视化插件] 自定义代码语法错误：{}{}",
+            where,
+            f"（{snippet[:60]}）" if snippet else "",
+        )
+        raise ValueError(f"自定义代码语法错误：{where}") from None
+    try:
+        exec(compiled, scope)
     finally:
         _state_save()
 
@@ -1849,10 +1861,58 @@ async def _schedule_{nid}():
     return sections
 
 
+# 自定义代码里最容易出现的「跨语法」写法（把模板的点路径当成 Python）
+_CODE_HINTS = (
+    (re.compile(r"(?<![0-9])\.\d+"), "Python 取列表元素要写 x[0]，不支持模板那种 x.0 写法"),
+    (re.compile(r"\{\{"), "代码里不做 {{}} 插值，取上游值直接写变量名或 ctx['名']"),
+)
+
+
+def _code_hint(code: str, lineno: Optional[int]) -> str:
+    """针对出错那一行给出针对性提示，命中才返回。"""
+    if not lineno:
+        return ""
+    lines = code.splitlines()
+    if not 1 <= lineno <= len(lines):
+        return ""
+    text = lines[lineno - 1]
+    for pattern, hint in _CODE_HINTS:
+        if pattern.search(text):
+            return f"；提示：{hint}"
+    return ""
+
+
+def _check_code_nodes(flow: dict) -> None:
+    """生成前先编译自定义代码，把语法错误挡在「更新插件」这一步。
+
+    运行时才报 SyntaxError 的话，日志里只有「定时任务异常：invalid syntax（<visual-plugin:xxx>, line 1）」，
+    既看不出是哪个节点、也看不出哪一行，排错成本很高。
+    """
+    for node in flow.get("nodes") or []:
+        if node.get("type") != "code":
+            continue
+        code = ((node.get("config") or {}).get("code") or "").strip()
+        if not code:
+            continue
+        try:
+            compile(code, "<自定义代码>", "exec")
+        except SyntaxError as exc:
+            snippet = (exc.text or "").strip()
+            where = f"第 {exc.lineno} 行" if exc.lineno else ""
+            detail = f"{where} {exc.msg}".strip()
+            if snippet:
+                detail += f"（{snippet[:60]}）"
+            raise ValueError(
+                f"节点 {node.get('id')} 的自定义代码有语法错误：{detail}"
+                + _code_hint(code, exc.lineno)
+            ) from None
+
+
 def generate_code(plugin: VisualPlugin, bot_name: str = "") -> str:
     """把可视化流程编译为直接控制流的 OneBot V11 NoneBot 插件源码。"""
     flow = _migrate_flow(plugin.flow)
     _validate_flow(flow, require_entry=True)
+    _check_code_nodes(flow)
     code = (
         _RUNTIME_TEMPLATE.replace(
             "%%PLUGIN_NAME%%", json.dumps(plugin.name, ensure_ascii=True)

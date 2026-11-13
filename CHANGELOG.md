@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-11-13
+
+### 修复
+
+- 「获取空间动态」失败时的日志只打出字面量 `%s`、看不到具体原因：改用 loguru 的 `{}` 占位（`nonebot.logger` 不支持 `%s`，多余参数会被直接丢弃）
+- 自定义代码节点写错语法时，以前只会在运行时抛「定时任务异常：invalid syntax（<visual-plugin:xxx>, line 1）」，既看不出是哪个节点也看不出哪一行。现在「更新插件／装配」阶段就会拦下，提示**节点、行号、具体的语法错误和出错片段**；保存草稿仍然允许，运行时的兜底日志也带上了同样的定位信息
+
 ## [1.4.1] - 2026-11-13
 
 ### 修复
@@ -97,7 +104,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.1...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.2...HEAD
+[1.4.2]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...v1.3.1
