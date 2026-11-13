@@ -6,6 +6,16 @@
 
 ## [Unreleased]
 
+## [1.3.0] - 2026-11-13
+
+### 改进
+
+- 可视化插件「定时任务」支持**一天多个触发时间**（如 `09:00`、`12:30`、`18:00`），不必再为每个时间点复制一条流程
+- 「每周定点」支持**多选星期**，并提供「工作日 / 周末 / 全选」快捷选择
+- 新增「启动后立即执行一次」选项，适合重启后马上跑一遍的场景
+- 定时任务触发时注入 `trigger` 上下文（`time` / `date` / `clock` / `weekday` / `mode` / `run_count`），可在后续节点用 `{{trigger.date}}` 等直接引用；编辑器里以列表形式列出这些变量
+- 旧流程里的单值 `time` / `weekday` 会在打开编辑器或重新生成插件时自动升级，无需手工改
+
 ## [1.2.0] - 2026-11-12
 
 ### 新增
@@ -67,7 +77,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...HEAD
+[1.3.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...v1.2.0
 [1.1.4]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.3...v1.1.4
 [1.1.3]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.2...v1.1.3
