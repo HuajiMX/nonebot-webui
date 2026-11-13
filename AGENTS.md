@@ -127,6 +127,7 @@ cd frontend; npm install; npm run build
 - 当前分类（前端显示名）：触发方式（群聊/私信监听、WebHook、定时任务）、基本组件（条件判断、循环遍历、自定义代码）、功能（API 请求、发送邮件）、机器人（发送消息、获取空间动态）、会话控制（会话入口、信息收集、选项交互、循环结束、会话结束）。
 - 「获取空间动态」（`qzone`）依赖协议端扩展接口：`get_qzone_msg_list`（指定 QQ 的说说，`target_uin`/`pos`/`num`）、`get_qzone_feeds`（好友动态，`page_num`/`count`）、`get_qzone_msg_detail`（单条，`tid`/`uin`，失败时回退到列表按 tid 查找）。结果统一规整为 `ok`/`items`/`count`/`total`/`text`/`error` 写入变量（默认 `qzone`）；协议端不支持时只写 `error`，不抛异常中断流程。**只有一个这类组件**（三种取法由 `source` 切换，刻意不拆成多个节点）；发布者信息 `uin`/`nickname` 由请求的 QQ 补齐、昵称缺失时用 `get_stranger_info` 补查（同一 QQ 每次只查一次，失败留空）。
 - 配对约束：**循环遍历 ↔ 循环结束**、**会话入口 ↔ 会话结束** 成对出现，自动创建配对节点，左侧用不可删除的线条连接，删除其一则同删。
+- **`ctx` 与 `state` 的分工（改代码节点相关逻辑必须守住）**：`ctx` 是单次执行的作用域，每次触发（含每次定时任务）都 `_build_ctx()` 新建，写入的值流程结束即丢；`state` 是**全局变量**，模块级 `_STATE` 在导入时从 `<插件目录>/vplugin_state_<模块名>.json` 读取，`_exec_code` 执行完在 `finally` 里比对指纹后原子写回（`os.replace`），因此跨触发、跨机器人重启都在。自定义代码里 `state["k"] = v` 写入、下游用 `{{state.k}}` 引用；`state` 已列入 `RESERVED_VARS`，节点变量名不能占用。
 - 会话按「群号 + QQ 号」创建/复用存储；`session` 变量访问会话内收集的数据；`sender` 仅在消息监听节点下游可用。
 - 编辑器的「更新插件」= 保存后自动重新装配到已安装的机器人，不展示生成的 py 代码。
 - 生成的文件名为 `vplugin_xxxx.py`，但代码内声明 `PLUGIN_NAME = "真实名称"`；插件列表解析该字段展示显示名（`display_name`），并据模块名前缀标记 `is_visual`（前端显示「可视化」胶囊），启停等操作仍按模块名（`name`）进行。

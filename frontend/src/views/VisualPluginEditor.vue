@@ -409,14 +409,24 @@
                   type="textarea"
                   :rows="10"
                   class="code-input"
-                  placeholder="可直接使用：msg、segments、sender、user_id、group_id、system、ctx、bot、event"
+                  placeholder="可直接使用：msg、segments、sender、user_id、group_id、system、ctx、state、bot、event"
                 />
               </el-form-item>
               <el-alert type="info" :closable="false">
-                可用变量：<code>msg</code> <code>segments</code> <code>sender</code> <code>user_id</code>
-                <code>group_id</code> <code>system</code> <code>bot</code> <code>event</code> <code>ctx</code>
-                <code>reply</code> <code>webhook</code>；向 <code>ctx</code> 写入的值可在后续节点用
-                <code>{{ varHint }}</code> 引用。
+                <div class="alert-tip">
+                  <div class="var-chips">
+                    <span class="var-chips-label">可用变量</span>
+                    <code v-for="v in CODE_NODE_VARS" :key="v">{{ v }}</code>
+                  </div>
+                  <div class="alert-tip-gap">
+                    <code>ctx["count"] = 1</code> 只在本次执行内有效，下游用
+                    <code v-pre>{{count}}</code> 引用。
+                  </div>
+                  <div class="alert-tip-gap">
+                    <code>state["last_tid"] = "…"</code> 是<b>全局变量</b>，会存盘，
+                    下次触发／重启后仍在，下游用 <code v-pre>{{state.last_tid}}</code> 引用。
+                  </div>
+                </div>
               </el-alert>
             </el-form>
           </template>
@@ -676,13 +686,19 @@ import api from "../api";
 
 const props = defineProps({ pluginId: { type: String, required: true } });
 
+// 自定义代码节点里可直接引用的名字（与生成的 _code_scope 保持一致）
+const CODE_NODE_VARS = [
+  "msg", "segments", "sender", "user_id", "group_id", "system",
+  "bot", "event", "ctx", "state", "reply", "webhook",
+];
+
 const NODE_W = 240;
 const NODE_H = 72;
-const varHint = "{{变量名}}";
 const weekdays = ["周一", "周二", "周三", "周四", "周五", "周六", "周日"];
 
 // 任何触发方式都可用
 const ALWAYS_VARS = [
+  { name: "state", desc: "全局变量，跨触发保留，如 {{state.last_tid}}" },
   { name: "bot_id", desc: "机器人 QQ 号" },
   { name: "bot_name", desc: "机器人名称" },
   { name: "system.cpu", desc: "CPU 占用百分比" },
@@ -2120,6 +2136,23 @@ onBeforeUnmount(() => {
 
 .alert-tip {
   line-height: 1.6;
+}
+
+/* 说明块里的小段间距，避免几行挤成一片 */
+.alert-tip-gap {
+  margin-top: 5px;
+}
+
+/* 变量名排成可换行的胶囊，不靠空白分隔（Vue 会折掉行内空白导致粘连） */
+.var-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 5px;
+}
+
+.var-chips-label {
+  margin-right: 2px;
 }
 
 .alert-tip-title {

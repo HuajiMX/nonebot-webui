@@ -205,6 +205,9 @@ MESSAGE_TYPES = {
 # 生成代码中作为标识符使用的字段必须匹配该正则，防止流程数据注入任意 Python
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# 保留变量名：state 是跨触发保留的全局变量，不能被节点当作普通变量名占用
+RESERVED_VARS = frozenset({"state"})
+
 # 定时任务的触发时间格式（HH:MM，允许 9:00 这种单位数小时）
 TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
 
@@ -214,6 +217,8 @@ def _require_ident(cfg: dict, key: str, node_id: str, default: str) -> str:
     value = str(cfg.get(key) or "").strip() or default
     if not IDENT_RE.match(value):
         raise ValueError(f"节点 {node_id} 的「变量名」必须是合法 Python 变量名")
+    if value in RESERVED_VARS:
+        raise ValueError(f"节点 {node_id} 的「变量名」不能使用保留名「{value}」（全局变量）")
     return value
 
 
@@ -569,6 +574,49 @@ def _spawn(coro) -> None:
     task.add_done_callback(_bg_tasks.discard)
 
 
+# ---------- 全局变量：跨触发保留，随插件落盘 ----------
+def _state_path() -> str:
+    base = os.path.dirname(os.path.abspath(globals().get("__file__") or "."))
+    return os.path.join(base, f"vplugin_state_{PLUGIN_MODULE}.json")
+
+
+def _state_load() -> dict:
+    try:
+        with open(_state_path(), encoding="utf-8") as fp:
+            data = json.load(fp)
+    except (OSError, ValueError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _state_fingerprint() -> str:
+    try:
+        return json.dumps(_STATE, ensure_ascii=False, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return ""
+
+
+_STATE: Dict[str, Any] = _state_load()
+_STATE_SAVED_FP = _state_fingerprint()
+
+
+def _state_save() -> None:
+    """有变化才写盘；先写临时文件再替换，避免留下半截 JSON。"""
+    global _STATE_SAVED_FP
+    fingerprint = _state_fingerprint()
+    if fingerprint == _STATE_SAVED_FP:
+        return
+    path = _state_path()
+    try:
+        with open(path + ".tmp", "w", encoding="utf-8") as fp:
+            json.dump(_STATE, fp, ensure_ascii=False, indent=2, default=str)
+        os.replace(path + ".tmp", path)
+    except (OSError, TypeError, ValueError) as exc:  # noqa: BLE001
+        nonebot.logger.warning(f"[可视化插件] 全局变量保存失败：{exc}")
+        return
+    _STATE_SAVED_FP = fingerprint
+
+
 _SAFE_BUILTINS = {
     "range": range,
     "list": list,
@@ -863,6 +911,7 @@ def _build_ctx(bot: Optional[Bot], event: Optional[Event], webhook: Optional[dic
     ctx["system"] = _system_info()
     ctx["reply"] = None
     ctx["webhook"] = webhook or {}
+    ctx["state"] = _STATE
     return ctx
 
 
@@ -1207,6 +1256,7 @@ def _code_scope(ctx: dict) -> dict:
         "system": ctx.get("system"),
         "reply": ctx.get("reply"),
         "webhook": ctx.get("webhook"),
+        "state": _STATE,
         "print": print,
         "json": json,
         "time": time,
@@ -1214,14 +1264,20 @@ def _code_scope(ctx: dict) -> dict:
 
 
 def _exec_code(code: str, ctx: dict) -> None:
-    """执行自定义代码块：上下文键（如循环变量）会直接作为变量暴露。"""
+    """执行自定义代码块：上下文键（如循环变量）会直接作为变量暴露。
+
+    写进 ctx 的值只在本次执行内有效；写进 state 的值会落盘、下次触发仍在。
+    """
     if not code.strip():
         return
     scope = _code_scope(ctx)
     for k, v in ctx.items():
         if isinstance(k, str) and k.isidentifier():
             scope.setdefault(k, v)
-    exec(compile(code, f"<visual-plugin:{PLUGIN_MODULE}>", "exec"), scope)
+    try:
+        exec(compile(code, f"<visual-plugin:{PLUGIN_MODULE}>", "exec"), scope)
+    finally:
+        _state_save()
 
 
 def _loop_items(expr: Any, ctx: dict) -> list:
