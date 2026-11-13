@@ -91,6 +91,16 @@ class _FakeLogger:
         pass
 
 
+class _RecordingLogger(_FakeLogger):
+    """记录 warning 内容，便于断言告警文案。"""
+
+    def __init__(self):
+        self.messages: list[str] = []
+
+    def warning(self, msg, *args, **kwargs):
+        self.messages.append(str(msg))
+
+
 def load_store_runtime(template: str) -> str:
     """取出模板里的存储实现（不含事件处理器），便于脱离 nonebot 单独测试。"""
     start = template.index("# ---------- 长期存储")
@@ -165,6 +175,53 @@ def test_store_runtime(template: str) -> None:
 
         ns2["store"].clear()
         check("存储：清空后为空", ns2["store"].keys() == [])
+
+    # 插件目录尚未创建（或首次运行）时也要能落盘，且连续写入不能丢前一个键
+    with tempfile.TemporaryDirectory() as tmp2:
+        nested = Path(tmp2) / "bot" / "plugins" / "deeper"
+        ns3 = exec_store_runtime(template, nested)
+        ns3["store"].set("k1", 1)
+        ns3["store"].set("k2", 2)
+        check("存储：目录不存在时也能写入", ns3["store"].keys() == ["k1", "k2"])
+        check("存储：连续写入不丢前一个键", ns3["store"].get("k1") == 1)
+        ns4 = exec_store_runtime(template, nested)
+        check("存储：新目录写入的内容重启后仍在", ns4["store"].keys() == ["k1", "k2"])
+
+
+def test_target_id(template: str) -> None:
+    """发送目标号码必须支持 {{变量}} 模板（循环里逐个私聊的常见写法）。"""
+    logger = _RecordingLogger()
+    ns: dict = {
+        "Any": Any,
+        "re": re,
+        "nonebot": types.SimpleNamespace(logger=logger),
+        "_StoreProxy": type("_StoreProxy", (), {}),
+    }
+    start = template.index("def _resolve(")
+    end = template.index("def _build_ctx(", start)
+    exec(compile(template[start:end], "<logic>", "exec"), ns)
+    start = template.index("def _target_id(")
+    end = template.index("async def _send(", start)
+    exec(compile(template[start:end], "<target_id>", "exec"), ns)
+    target_id = ns["_target_id"]
+
+    check("目标号码：{{变量}} 渲染后可用", target_id("{{qq}}", {"qq": "123456"}) == 123456)
+    check("目标号码：变量是整数也可用", target_id("{{qq}}", {"qq": 123456}) == 123456)
+    check("目标号码：纯数字直接可用", target_id("123456", {}) == 123456)
+    check("目标号码：首尾空格被忽略", target_id(" 123456 ", {}) == 123456)
+    check("目标号码：留空时回退触发者", target_id("", {}, 555) == 555)
+    check(
+        "目标号码：变量为空时回退触发者",
+        target_id("{{qq}}", {"qq": "", "user_id": 555}, 555) == 555,
+    )
+    logger.messages.clear()
+    check("目标号码：非数字返回 0 而不是抛异常", target_id("{{qq}}", {"qq": "abc"}) == 0)
+    check(
+        "目标号码：非数字时给出明确告警",
+        any("不是有效数字" in m for m in logger.messages),
+        f"实际日志 {logger.messages}",
+    )
+    check("目标号码：变量不存在返回 0", target_id("{{nope}}", {}) == 0)
 
 
 def main() -> int:
@@ -258,6 +315,9 @@ def main() -> int:
 
     # 2.1 存储行为（脱离 nonebot 单独跑模板里的实现）
     test_store_runtime(template)
+
+    # 2.2 发送目标支持 {{变量}}（循环里逐个私聊）
+    test_target_id(template)
 
     # 3. 生成的插件代码（需要 WebUI 依赖）
     sys.path.insert(0, str(ROOT))

@@ -752,18 +752,21 @@ def _store_reload_if_stale() -> None:
         _store_load_locked()
 
 
-def _store_flush_locked() -> None:
+def _store_flush_locked() -> bool:
+    """把内存落盘；失败返回 False，由调用方决定是否回滚。"""
     global _STORE_MTIME
     path = _store_path()
     payload = {"version": 1, "items": _STORE}
     try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         with open(path + ".tmp", "w", encoding="utf-8") as fp:
             json.dump(payload, fp, ensure_ascii=False, indent=2, default=str)
         os.replace(path + ".tmp", path)
     except (OSError, TypeError, ValueError) as exc:  # noqa: BLE001
         nonebot.logger.warning(f"[可视化插件] 存储写入失败：{exc}")
-        return
+        return False
     _STORE_MTIME = _store_stat_mtime()
+    return True
 
 
 def _store_key(key: Any) -> str:
@@ -793,18 +796,16 @@ def _store_check_limits() -> None:
 
 
 def _store_commit(key: str, item: dict) -> None:
-    """在已持有内存锁与文件锁的前提下落盘；超限则回滚，不留下半截脏数据。"""
-    previous = _STORE.get(key)
+    """在已持有内存锁与文件锁的前提下落盘；超限或写盘失败都回滚，不留下假数据。"""
     _STORE[key] = item
     try:
         _store_check_limits()
     except ValueError:
-        if previous is None:
-            _STORE.pop(key, None)
-        else:
-            _STORE[key] = previous
+        _store_load_locked()
         raise
-    _store_flush_locked()
+    if not _store_flush_locked():
+        _store_load_locked()  # 以磁盘为准，避免「内存里有、重启就没了」
+        raise ValueError("存储写入失败，请检查插件目录是否可写")
 
 
 def _store_get(key: Any, default: Any = None) -> Any:
@@ -832,8 +833,9 @@ def _store_delete(key: Any) -> bool:
         with _StoreFileLock(_store_path() + ".lock"):
             _store_load_locked()
             removed = _STORE.pop(text, None) is not None
-            if removed:
-                _store_flush_locked()
+            if removed and not _store_flush_locked():
+                _store_load_locked()
+                raise ValueError("存储写入失败，请检查插件目录是否可写")
     return removed
 
 
@@ -888,7 +890,9 @@ def _store_clear(key: Any = "") -> bool:
                 removed = bool(_STORE)
                 _STORE.clear()
             if removed:
-                _store_flush_locked()
+                if not _store_flush_locked():
+                    _store_load_locked()
+                    raise ValueError("存储写入失败，请检查插件目录是否可写")
     return removed
 
 
@@ -1353,6 +1357,24 @@ def _attach_bot(ctx: dict) -> None:
         ctx["bot_id"] = bot.self_id
 
 
+def _target_id(raw: Any, ctx: dict, fallback: Any = None) -> int:
+    """解析发送目标 ID：支持 {{变量}} 模板，渲染后转整数，取不到返回 0。"""
+    for candidate in (raw, fallback):
+        if candidate in (None, ""):
+            continue
+        text = str(_tpl(str(candidate), ctx)).strip()
+        if not text:
+            continue
+        if not text.isdigit():
+            nonebot.logger.warning(
+                f"[可视化插件] 发送消息失败：目标号码「{text}」不是有效数字"
+                "（检查该变量是否为空或含有空格）"
+            )
+            return 0
+        return int(text)
+    return 0
+
+
 async def _send(ctx: dict, msgs: list, target_cfg: Optional[dict] = None) -> None:
     event = ctx.get("event")
     target_cfg = target_cfg or {}
@@ -1373,13 +1395,13 @@ async def _send(ctx: dict, msgs: list, target_cfg: Optional[dict] = None) -> Non
         return
     try:
         if target == "group":
-            gid = int(target_cfg.get("id") or ctx.get("group_id") or 0)
+            gid = _target_id(target_cfg.get("id"), ctx, ctx.get("group_id"))
             if gid:
                 await bot.call_api("send_group_msg", group_id=gid, message=message)
             else:
                 nonebot.logger.warning("[可视化插件] 发送消息失败：未指定群号")
         elif target == "user":
-            uid = int(target_cfg.get("id") or ctx.get("user_id") or 0)
+            uid = _target_id(target_cfg.get("id"), ctx, ctx.get("user_id"))
             if uid:
                 await bot.call_api("send_private_msg", user_id=uid, message=message)
             else:
