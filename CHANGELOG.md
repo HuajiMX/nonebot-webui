@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.4.1] - 2026-11-13
+
+### 修复
+
+- 「获取空间动态」产生的变量（默认 `qzone`）现在会进入下游节点的「可用变量」列表，并列出 `qzone.text` / `qzone.items` / `qzone.count` / `qzone.error` 等常用字段；此前该节点漏了登记，下游只能手写
+- 循环体内的**第一个节点**现在也能看到循环变量（此前只有体内第二个及之后的节点能看到）；同时循环结束后该变量不再出现在下游列表里
+
 ## [1.4.0] - 2026-11-13
 
 ### 新增
@@ -90,7 +97,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.0...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.1...HEAD
+[1.4.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...v1.3.0
