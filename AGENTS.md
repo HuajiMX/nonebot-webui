@@ -123,6 +123,7 @@ cd frontend; npm install; npm run build
 ### 可视化插件
 
 - **组件目录唯一权威来源是 `backend/visual_plugin.py` 的 `NODE_CATALOG`**；前端通过 `GET /api/visual-plugins/catalog` 获取，改组件必须同步修改 `generate_code()` 的代码生成逻辑。
+- 「定时任务」（`schedule`）除 `interval` 外有三种定点模式，字段为 **`times: ["09:00", ...]`（可多个）**、`weekdays: [0-6]`（可多选，0=周一）、`day`（每月几号，小月按月末），另可开 `run_on_start` 启动即跑一次；生成代码用 `_schedule_next()` 取下一个触发点，并给每轮注入 `ctx["trigger"]`（`time`/`date`/`clock`/`weekday`/`weekday_index`/`mode`/`run_count`）。旧的单值 `time`/`weekday` 由 `_normalize_schedule_config()` 在 `_migrate_flow` 与前端加载时自动升级，**改这里必须同时兼容旧数据**。
 - 当前分类（前端显示名）：触发方式（群聊/私信监听、WebHook、定时任务）、基本组件（条件判断、循环遍历、自定义代码）、功能（API 请求、发送邮件）、机器人（发送消息、获取空间动态）、会话控制（会话入口、信息收集、选项交互、循环结束、会话结束）。
 - 「获取空间动态」（`qzone`）依赖协议端扩展接口：`get_qzone_msg_list`（指定 QQ 的说说，`target_uin`/`pos`/`num`）、`get_qzone_feeds`（好友动态，`page_num`/`count`）、`get_qzone_msg_detail`（单条，`tid`/`uin`，失败时回退到列表按 tid 查找）。结果统一规整为 `ok`/`items`/`count`/`total`/`text`/`error` 写入变量（默认 `qzone`）；协议端不支持时只写 `error`，不抛异常中断流程。**只有一个这类组件**（三种取法由 `source` 切换，刻意不拆成多个节点）；发布者信息 `uin`/`nickname` 由请求的 QQ 补齐、昵称缺失时用 `get_stranger_info` 补查（同一 QQ 每次只查一次，失败留空）。
 - 配对约束：**循环遍历 ↔ 循环结束**、**会话入口 ↔ 会话结束** 成对出现，自动创建配对节点，左侧用不可删除的线条连接，删除其一则同删。

@@ -332,25 +332,67 @@
                 <el-input-number v-model="selectedNode.config.interval" :min="1" :max="86400" style="width: 100%" />
               </el-form-item>
               <template v-else>
-                <el-form-item label="触发时间">
-                  <el-time-select
-                    v-model="selectedNode.config.time"
-                    start="00:00"
-                    end="23:30"
-                    step="00:30"
-                    placeholder="选择时间"
-                    style="width: 100%"
-                  />
+                <el-form-item label="触发时间（可添加多个）">
+                  <div class="time-list">
+                    <div v-for="(t, idx) in selectedNode.config.times" :key="idx" class="time-row">
+                      <el-time-select
+                        v-model="selectedNode.config.times[idx]"
+                        start="00:00"
+                        end="23:45"
+                        step="00:15"
+                        placeholder="选择时间"
+                        style="flex: 1"
+                      />
+                      <el-button
+                        text
+                        type="danger"
+                        :icon="Delete"
+                        :disabled="selectedNode.config.times.length <= 1"
+                        @click="selectedNode.config.times.splice(idx, 1)"
+                      />
+                    </div>
+                    <el-button
+                      size="small"
+                      :icon="Plus"
+                      :disabled="selectedNode.config.times.length >= 24"
+                      @click="selectedNode.config.times.push('09:00')"
+                    >
+                      添加时间
+                    </el-button>
+                  </div>
                 </el-form-item>
-                <el-form-item v-if="selectedNode.config.mode === 'weekly'" label="星期几">
-                  <el-select v-model="selectedNode.config.weekday" style="width: 100%">
-                    <el-option v-for="(label, i) in weekdays" :key="i" :label="label" :value="i" />
-                  </el-select>
+                <el-form-item v-if="selectedNode.config.mode === 'weekly'" label="星期（可多选）">
+                  <el-checkbox-group v-model="selectedNode.config.weekdays" class="weekday-group">
+                    <el-checkbox-button v-for="(label, i) in weekdays" :key="i" :value="i">
+                      {{ label }}
+                    </el-checkbox-button>
+                  </el-checkbox-group>
+                  <div class="quick-row">
+                    <el-button size="small" text @click="setWeekdays([0, 1, 2, 3, 4])">工作日</el-button>
+                    <el-button size="small" text @click="setWeekdays([5, 6])">周末</el-button>
+                    <el-button size="small" text @click="setWeekdays([0, 1, 2, 3, 4, 5, 6])">全选</el-button>
+                  </div>
                 </el-form-item>
-                <el-form-item v-else-if="selectedNode.config.mode === 'monthly'" label="每月几号">
+                <el-form-item v-else-if="selectedNode.config.mode === 'monthly'" label="每月几号（小月按月末执行）">
                   <el-input-number v-model="selectedNode.config.day" :min="1" :max="31" style="width: 100%" />
                 </el-form-item>
               </template>
+              <el-form-item label="启动后立即执行一次">
+                <el-switch v-model="selectedNode.config.run_on_start" inactive-text="等到下个时间点" active-text="先跑一次" />
+              </el-form-item>
+              <el-alert type="info" :closable="false">
+                <div class="alert-tip">
+                  <div class="alert-tip-title">
+                    可用变量（如 <code v-pre>{{trigger.date}}</code>）
+                  </div>
+                  <div class="var-list">
+                    <div v-for="v in SCHEDULE_VARS" :key="v.name">
+                      <code>{{ v.name }}</code>
+                      <span>{{ v.desc }}</span>
+                    </div>
+                  </div>
+                </div>
+              </el-alert>
             </el-form>
           </template>
 
@@ -665,6 +707,17 @@ const WEBHOOK_VARS = [
   { name: "webhook", desc: "WebHook 请求负载" },
 ];
 
+// 仅定时任务触发分支可用
+const SCHEDULE_VARS = [
+  { name: "trigger.time", desc: "时间 11-13 09:00" },
+  { name: "trigger.date", desc: "日期 2026-11-13" },
+  { name: "trigger.clock", desc: "时分 09:00" },
+  { name: "trigger.weekday", desc: "星期 周五" },
+  { name: "trigger.weekday_index", desc: "4（周一=0）" },
+  { name: "trigger.mode", desc: "模式 daily" },
+  { name: "trigger.run_count", desc: "第几次触发" },
+];
+
 const catalog = ref({ nodes: {}, condition_ops: {}, message_types: {} });
 const plugin = reactive({ name: "", description: "" });
 const flow = reactive({ nodes: [], edges: [] });
@@ -901,10 +954,20 @@ function nodeSummary(node) {
       return `遍历 ${cfg.items || "…"} → ${cfg.var || "item"}`;
     case "schedule": {
       const mode = cfg.mode || "interval";
-      if (mode === "interval") return `每 ${cfg.interval || 60} 秒`;
-      if (mode === "daily") return `每天 ${cfg.time || "09:00"}`;
-      if (mode === "weekly") return `每周${weekdays[cfg.weekday ?? 1]} ${cfg.time || "09:00"}`;
-      return `每月${cfg.day || 1}号 ${cfg.time || "09:00"}`;
+      const suffix = cfg.run_on_start ? " · 启动即跑" : "";
+      if (mode === "interval") return `每 ${cfg.interval || 60} 秒${suffix}`;
+      const times = (Array.isArray(cfg.times) && cfg.times.length ? cfg.times : [cfg.time || "09:00"]).join(" / ");
+      if (mode === "daily") return `每天 ${times}${suffix}`;
+      if (mode === "weekly") {
+        const picked = (Array.isArray(cfg.weekdays) && cfg.weekdays.length ? cfg.weekdays : [cfg.weekday ?? 1])
+          .slice()
+          .sort((a, b) => a - b);
+        let days = picked.map((i) => weekdays[i]).join("、");
+        if (picked.length === 7) days = "每天";
+        else if (picked.join(",") === "0,1,2,3,4") days = "工作日";
+        return `${days} ${times}${suffix}`;
+      }
+      return `每月${cfg.day || 1}号 ${times}${suffix}`;
     }
     case "api":
       return `${cfg.method || "GET"} ${cfg.url || "…"} → ${cfg.var || "api_resp"}`;
@@ -933,6 +996,37 @@ function nodeSummary(node) {
     default:
       return "";
   }
+}
+
+// 星期多选快捷设置
+function setWeekdays(list) {
+  if (!selectedNode.value) return;
+  selectedNode.value.config.weekdays = [...list];
+}
+
+// 兼容旧数据：把单值 time / weekday 升级为 times / weekdays
+function normalizeScheduleConfig(raw) {
+  const out = { ...(raw || {}) };
+  if (!Array.isArray(out.times) || !out.times.length) {
+    out.times = [String(out.time || "09:00")];
+  }
+  out.times = out.times.map((t) => String(t).trim()).filter(Boolean);
+  if (!out.times.length) out.times = ["09:00"];
+  if (!Array.isArray(out.weekdays) || !out.weekdays.length) {
+    const legacy = parseInt(out.weekday, 10);
+    out.weekdays = [Number.isInteger(legacy) ? Math.min(6, Math.max(0, legacy)) : 1];
+  }
+  out.weekdays = [
+    ...new Set(
+      out.weekdays
+        .map((w) => Number(w))
+        .filter((w) => Number.isInteger(w) && w >= 0 && w <= 6)
+    ),
+  ].sort((a, b) => a - b);
+  if (!out.weekdays.length) out.weekdays = [0, 1, 2, 3, 4];
+  delete out.time;
+  delete out.weekday;
+  return out;
 }
 
 function loopEndName(node) {
@@ -1248,11 +1342,12 @@ function deleteEdge(edge) {
 // 节点是否处于某类触发分支（消息/WebHook/会话入口）的下游
 const reachMap = computed(() => {
   const res = {};
-  flow.nodes.forEach((n) => (res[n.id] = { msg: false, webhook: false, entry: false }));
+  flow.nodes.forEach((n) => (res[n.id] = { msg: false, webhook: false, schedule: false, entry: false }));
   const entryKinds = {
     listener_group: "msg",
     listener_private: "msg",
     listener_webhook: "webhook",
+    schedule: "schedule",
     conversation_entry: "entry",
   };
   for (const n of flow.nodes) {
@@ -1359,6 +1454,8 @@ const availableVars = computed(() => {
   const list = [...ALWAYS_VARS];
   if (reach.msg) list.push(...MSG_VARS);
   if (reach.webhook) list.push(...WEBHOOK_VARS);
+  // 定时任务自身即入口，reachMap 只标下游，因此这里单独判断
+  if (reach.schedule || selectedNode.value.type === "schedule") list.push(...SCHEDULE_VARS);
   list.push(...(flowVars.value[selectedNode.value.id] || []));
   return list;
 });
@@ -1465,7 +1562,9 @@ onMounted(async () => {
     flow.nodes = pluginData.flow.nodes || [];
     flow.edges = pluginData.flow.edges || [];
     for (const node of flow.nodes) {
-      node.config = { ...defaultConfig(node.type), ...(node.config || {}) };
+      const raw = node.config || {};
+      const normalized = node.type === "schedule" ? normalizeScheduleConfig(raw) : raw;
+      node.config = { ...defaultConfig(node.type), ...normalized };
       if (node.type === "logic" && !(node.config.conditions || []).length) {
         node.config.conditions = [{ left: "", op: "contains", right: "" }];
       }
@@ -1956,6 +2055,72 @@ onBeforeUnmount(() => {
   font-size: 12px;
   color: var(--nb-text-secondary);
   margin: 8px 0 6px;
+}
+
+/* 定时任务：多时间点 / 多星期 */
+.time-list {
+  width: 100%;
+}
+
+.time-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+
+.weekday-group {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 4px;
+  width: 100%;
+}
+
+/* 7 个星期按钮按 4 列网格排布（4 + 3），避免最后一两个单独换行 */
+.weekday-group :deep(.el-checkbox-button) {
+  margin: 0;
+}
+
+.weekday-group :deep(.el-checkbox-button__inner) {
+  width: 100%;
+  padding: 5px 0;
+  font-size: 12px;
+  border-radius: 4px;
+  border: 1px solid var(--el-border-color);
+}
+
+.quick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-top: 2px;
+}
+
+.alert-tip {
+  line-height: 1.6;
+}
+
+.alert-tip-title {
+  margin-bottom: 4px;
+}
+
+/* 变量逐行列出，不用顿号串联 */
+.var-list > div {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  line-height: 1.7;
+}
+
+.var-list code {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+.var-list span {
+  min-width: 0;
+  color: #6b7280;
+  word-break: break-word;
 }
 
 /* 「获取空间动态」的返回值示例：等宽小字，超宽自动折行 */

@@ -84,7 +84,14 @@ NODE_CATALOG = {
     "schedule": {
         "category": "listener",
         "label": "定时任务",
-        "default": {"mode": "interval", "interval": 60, "time": "09:00", "weekday": 1, "day": 1},
+        "default": {
+            "mode": "interval",  # interval | daily | weekly | monthly
+            "interval": 60,
+            "times": ["09:00"],  # 定点模式可配置多个时间点
+            "weekdays": [0, 1, 2, 3, 4],  # weekly：0=周一 … 6=周日，可多选
+            "day": 1,  # monthly：每月几号
+            "run_on_start": False,  # 启动后立即执行一次
+        },
     },
     "api": {
         "category": "feature",
@@ -198,6 +205,9 @@ MESSAGE_TYPES = {
 # 生成代码中作为标识符使用的字段必须匹配该正则，防止流程数据注入任意 Python
 IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# 定时任务的触发时间格式（HH:MM，允许 9:00 这种单位数小时）
+TIME_RE = re.compile(r"^([01]?\d|2[0-3]):[0-5]\d$")
+
 
 def _require_ident(cfg: dict, key: str, node_id: str, default: str) -> str:
     """校验配置字段必须是合法 Python 标识符，返回规范化后的值。"""
@@ -230,6 +240,47 @@ def _validate_node_config(ntype: str, cfg: dict, node_id: str) -> None:
                     raise ValueError(f"节点 {node_id} 的「{key}」必须是整数") from None
                 if not low <= value <= high:
                     raise ValueError(f"节点 {node_id} 的「{key}」超出范围（{low}~{high}）")
+    elif ntype == "schedule":
+        mode = str(cfg.get("mode") or "interval").strip().lower()
+        if mode not in ("interval", "daily", "weekly", "monthly"):
+            raise ValueError(f"节点 {node_id} 的「触发模式」不合法")
+        if mode == "interval":
+            try:
+                value = int(cfg.get("interval", 60))
+            except (TypeError, ValueError):
+                raise ValueError(f"节点 {node_id} 的「间隔」必须是整数秒") from None
+            if not 1 <= value <= 86400:
+                raise ValueError(f"节点 {node_id} 的「间隔」超出范围（1~86400 秒）")
+        else:
+            times = cfg.get("times")
+            if not isinstance(times, list) or not times:
+                times = [cfg.get("time") or "09:00"]  # 兼容旧流程的单值 time
+            if len(times) > 24:
+                raise ValueError(f"节点 {node_id} 最多配置 24 个触发时间")
+            for item in times:
+                text = str(item).strip()
+                if not TIME_RE.match(text):
+                    raise ValueError(f"节点 {node_id} 的触发时间「{text}」格式应为 HH:MM")
+            if mode == "weekly":
+                weekdays = cfg.get("weekdays")
+                if weekdays is None:  # 兼容旧流程的单值 weekday
+                    weekdays = [cfg.get("weekday", 1)]
+                if not isinstance(weekdays, list):
+                    raise ValueError(f"节点 {node_id} 的「星期」必须是列表")
+                for item in weekdays:
+                    try:
+                        value = int(item)
+                    except (TypeError, ValueError):
+                        raise ValueError(f"节点 {node_id} 的「星期」必须是 0~6 的整数") from None
+                    if not 0 <= value <= 6:
+                        raise ValueError(f"节点 {node_id} 的「星期」必须是 0~6 的整数")
+            if mode == "monthly":
+                try:
+                    value = int(cfg.get("day", 1))
+                except (TypeError, ValueError):
+                    raise ValueError(f"节点 {node_id} 的「每月几号」必须是整数") from None
+                if not 1 <= value <= 31:
+                    raise ValueError(f"节点 {node_id} 的「每月几号」超出范围（1~31）")
     elif ntype == "listener_webhook":
         _require_ident(cfg, "var", node_id, "webhook")
         path = str(cfg.get("path") or "").strip()
@@ -295,7 +346,7 @@ def _validate_flow(flow: dict, require_entry: bool = True) -> None:
 
 
 def _migrate_flow(flow: dict) -> dict:
-    """兼容旧版本流程：简单条件判断 / 会话分支 合并为「条件判断」(logic)。"""
+    """兼容旧版本流程：条件节点改名，定时任务补齐多时间点 / 多星期字段。"""
     nodes = []
     for n in flow.get("nodes") or []:
         node = dict(n)
@@ -317,8 +368,40 @@ def _migrate_flow(flow: dict) -> dict:
                     "negate": False,
                 },
             }
+        elif ntype == "schedule":
+            node = {**node, "config": _normalize_schedule_config(node.get("config") or {})}
         nodes.append(node)
     return {"nodes": nodes, "edges": flow.get("edges") or []}
+
+
+def _normalize_schedule_config(cfg: dict) -> dict:
+    """把旧的单值 time / weekday 升级为 times / weekdays 列表（保留可编辑性）。"""
+    out = dict(cfg)
+    times = out.get("times")
+    if not isinstance(times, list) or not times:
+        out["times"] = [str(out.get("time") or "09:00").strip() or "09:00"]
+    else:
+        out["times"] = [str(x).strip() for x in times if str(x).strip()] or ["09:00"]
+    weekdays = out.get("weekdays")
+    if not isinstance(weekdays, list) or not weekdays:
+        try:
+            legacy = int(out.get("weekday", 1))
+        except (TypeError, ValueError):
+            legacy = 1
+        out["weekdays"] = [min(6, max(0, legacy))]
+    else:
+        cleaned: List[int] = []
+        for item in weekdays:
+            try:
+                value = int(item)
+            except (TypeError, ValueError):
+                continue
+            if 0 <= value <= 6:
+                cleaned.append(value)
+        out["weekdays"] = sorted(set(cleaned)) or [0]
+    out.pop("time", None)
+    out.pop("weekday", None)
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -1153,21 +1236,55 @@ def _loop_items(expr: Any, ctx: dict) -> list:
     return items if isinstance(items, (list, tuple)) else []
 
 
-def _seconds_until(hour: int, minute: int, weekday: Optional[int] = None, day: Optional[int] = None) -> float:
-    """计算距离下一个目标触发时刻的秒数（含今天尚未到达的时刻）。"""
-    now = datetime.datetime.now()
+_WEEKDAY_NAMES = ("周一", "周二", "周三", "周四", "周五", "周六", "周日")
+
+
+def _schedule_next(cfg: dict, now: Optional[datetime.datetime] = None) -> float:
+    """计算距离下一次触发的秒数：支持多个时间点、多个星期、每月某日。"""
+    mode = cfg.get("mode") or "interval"
+    if mode == "interval":
+        try:
+            return float(max(1, int(cfg.get("interval", 60))))
+        except (TypeError, ValueError):
+            return 60.0
+    now = now or datetime.datetime.now()
+    times = cfg.get("times") or [(9, 0)]
+    weekdays = cfg.get("weekdays") or []
+    try:
+        day = int(cfg.get("day", 1))
+    except (TypeError, ValueError):
+        day = 1
+    best: Optional[float] = None
     for offset in range(0, 370):
         d = now + datetime.timedelta(days=offset)
-        if weekday is not None and d.weekday() != weekday:
+        if mode == "weekly" and weekdays and d.weekday() not in weekdays:
             continue
-        if day is not None:
+        if mode == "monthly":
             last = calendar.monthrange(d.year, d.month)[1]
             if d.day != min(day, last):
                 continue
-        candidate = d.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if candidate > now:
-            return max(1.0, (candidate - now).total_seconds())
-    return 60.0
+        for hour, minute in times:
+            candidate = d.replace(hour=int(hour), minute=int(minute), second=0, microsecond=0)
+            if candidate <= now:
+                continue
+            delta = (candidate - now).total_seconds()
+            if best is None or delta < best:
+                best = delta
+    return max(1.0, best if best is not None else 60.0)
+
+
+def _trigger_info(cfg: dict, run_count: int = 0) -> dict:
+    """定时任务触发时注入的上下文：时间、日期、星期、触发方式、第几次。"""
+    now = datetime.datetime.now()
+    return {
+        "time": now.strftime("%Y-%m-%d %H:%M:%S"),
+        "date": now.strftime("%Y-%m-%d"),
+        "clock": now.strftime("%H:%M"),
+        "weekday": _WEEKDAY_NAMES[now.weekday()],
+        "weekday_index": now.weekday(),
+        "mode": cfg.get("mode") or "interval",
+        "run_count": run_count,
+    }
 
 
 @event_preprocessor
@@ -1478,30 +1595,42 @@ def _parse_time(value: str) -> tuple[int, int]:
     return hour, minute
 
 
-def _schedule_delay_expr(cfg: dict) -> str:
-    mode = cfg.get("mode", "interval")
-    if mode == "interval":
+def _schedule_cfg_literal(cfg: dict) -> str:
+    """把定时任务配置规整为生成代码里的字面量（兼容旧的 time / weekday 单值字段）。"""
+    mode = str(cfg.get("mode") or "interval").strip().lower()
+    if mode not in ("interval", "daily", "weekly", "monthly"):
+        mode = "interval"
+    try:
+        interval = max(1, min(86400, int(cfg.get("interval", 60))))
+    except (TypeError, ValueError):
+        interval = 60
+    raw_times = cfg.get("times")
+    if not isinstance(raw_times, list) or not raw_times:
+        raw_times = [cfg.get("time") or "09:00"]
+    times = sorted({_parse_time(str(t)) for t in raw_times if str(t).strip()}) or [(9, 0)]
+    raw_weekdays = cfg.get("weekdays")
+    if not isinstance(raw_weekdays, list) or not raw_weekdays:
+        raw_weekdays = [cfg.get("weekday", 1)]
+    weekdays: List[int] = []
+    for item in raw_weekdays:
         try:
-            interval = max(1, int(cfg.get("interval", 60)))
+            weekdays.append(min(6, max(0, int(item))))
         except (TypeError, ValueError):
-            interval = 60
-        return str(interval)
-    hour, minute = _parse_time(cfg.get("time", "09:00"))
-    if mode == "daily":
-        return f"_seconds_until({hour}, {minute})"
-    if mode == "weekly":
-        try:
-            weekday = int(cfg.get("weekday", 1))
-        except (TypeError, ValueError):
-            weekday = 1
-        return f"_seconds_until({hour}, {minute}, weekday={min(6, max(0, weekday))})"
-    if mode == "monthly":
-        try:
-            day = int(cfg.get("day", 1))
-        except (TypeError, ValueError):
-            day = 1
-        return f"_seconds_until({hour}, {minute}, day={min(31, max(1, day))})"
-    return "60"
+            continue
+    try:
+        day = max(1, min(31, int(cfg.get("day", 1))))
+    except (TypeError, ValueError):
+        day = 1
+    return _py_literal(
+        {
+            "mode": mode,
+            "interval": interval,
+            "times": times,
+            "weekdays": sorted(set(weekdays)) or [0],
+            "day": day,
+            "run_on_start": bool(cfg.get("run_on_start", False)),
+        }
+    )
 
 
 def _emit_entries(flow: dict, module: str) -> list[str]:
@@ -1629,20 +1758,28 @@ async def _webhook_{nid}(request):
 """
             )
         elif ntype == "schedule":
-            delay = _schedule_delay_expr(cfg)
             sections.append(
                 f"""# ---------- 定时任务 ----------
 driver = get_driver()
+_SCHEDULE_{nid} = {_schedule_cfg_literal(cfg)}
 
 
 @driver.on_startup
 async def _schedule_{nid}():
     async def _task():
+        _runs = 0
+        _first = True
         while True:
+            if not (_first and _SCHEDULE_{nid}.get("run_on_start")):
+                await asyncio.sleep(_schedule_next(_SCHEDULE_{nid}))
+            _first = False
+            _runs += 1
             try:
-                await asyncio.sleep({delay})
-                nonebot.logger.info(f"[可视化插件] 定时任务触发：{{PLUGIN_NAME}}")
+                nonebot.logger.info(
+                    f"[可视化插件] 定时任务触发：{{PLUGIN_NAME}}（第 {{_runs}} 次）"
+                )
                 ctx = _build_ctx(None, None)
+                ctx["trigger"] = _trigger_info(_SCHEDULE_{nid}, _runs)
                 _attach_bot(ctx)
                 {call}
             except asyncio.CancelledError:
