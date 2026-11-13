@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-11-13
+
+### 新增
+
+- 可视化插件新增**全局变量** `state`：在自定义代码里 `state["上次时间"] = ...` 写入，会存盘到插件目录，**下次触发、机器人重启后仍然保留**；后续节点用 `{{state.上次时间}}` 引用
+- 自定义代码节点的说明区区分了两种写法：`ctx["名"]` 只在本次执行内有效，`state["名"]` 是跨触发的全局变量
+
 ## [1.3.1] - 2026-11-13
 
 ### 修复
@@ -83,7 +90,8 @@
 
 首个正式版本。
 
-[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.1...HEAD
+[Unreleased]: https://github.com/HuajiMX/nonebot-webui/compare/v1.4.0...HEAD
+[1.4.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/HuajiMX/nonebot-webui/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/HuajiMX/nonebot-webui/compare/v1.1.4...v1.2.0
