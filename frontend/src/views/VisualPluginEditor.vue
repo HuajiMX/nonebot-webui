@@ -1414,6 +1414,14 @@ const flowVars = computed(() => {
   const byId = {};
   flow.nodes.forEach((n) => (byId[n.id] = n));
   const defs = {};
+  const descs = {};
+  // 空间动态结果的常用字段，列成子变量方便直接插入
+  const QZONE_SUB = [
+    ["text", "已拼好的纯文本，可直接发送"],
+    ["items", "动态列表，可接循环遍历"],
+    ["count", "这次取到几条"],
+    ["error", "失败原因（ok 为 false 时看）"],
+  ];
   flow.nodes.forEach((n) => {
     const set = new Set();
     if (n.type === "collect") {
@@ -1425,6 +1433,15 @@ const flowVars = computed(() => {
     }
     if (n.type === "api") {
       set.add(n.config.var || "api_resp");
+    }
+    if (n.type === "qzone") {
+      const base = n.config.var || "qzone";
+      set.add(base);
+      descs[base] = "获取空间动态的结果";
+      QZONE_SUB.forEach(([field, desc]) => {
+        set.add(`${base}.${field}`);
+        descs[`${base}.${field}`] = desc;
+      });
     }
     if (n.type === "send_email") {
       set.add("email_sent");
@@ -1466,9 +1483,18 @@ const flowVars = computed(() => {
       Object.entries(bodies).forEach(([lid, bodySet]) => {
         if (bodySet.has(n.id)) out.add(byId[lid].config.var || "item");
       });
+      // 循环结束后循环变量就失效了，不再往下游传播
+      if (n.type === "loop_end" && n.config.loop && byId[n.config.loop]) {
+        out.delete(byId[n.config.loop].config.var || "item");
+      }
       flow.edges.forEach((e) => {
         if (e.from !== n.id) return;
-        out.forEach((x) => {
+        // 循环体里的节点（含体内第一个节点）都能拿到循环变量
+        const out2 = new Set(out);
+        Object.entries(bodies).forEach(([lid, bodySet]) => {
+          if (bodySet.has(e.to)) out2.add(byId[lid].config.var || "item");
+        });
+        out2.forEach((x) => {
           if (!defined[e.to].has(x)) {
             defined[e.to].add(x);
             changed = true;
@@ -1480,7 +1506,7 @@ const flowVars = computed(() => {
   flow.nodes.forEach((n) => {
     map[n.id] = [...defined[n.id]].map((name) => ({
       name,
-      desc: "由前置节点产生的变量",
+      desc: descs[name] || "由前置节点产生的变量",
     }));
   });
   return map;
