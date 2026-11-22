@@ -295,15 +295,6 @@ def test_system_info(template: str) -> None:
         check("系统状态：返回磁盘占用", isinstance(info.get("disk"), (int, float)), f"实际 {info}")
         check("系统状态：gpu 字段始终存在", "gpu" in info)
 
-    # 文本里的 \\n 要转成真换行
-    start = template.index("def _unescape_text(")
-    end = template.index("def _build_message(", start)
-    exec(compile(template[start:end], "<unescape>", "exec"), ns)
-    unescape = ns["_unescape_text"]
-    check("文本换行：字面 \\n 转成真换行", unescape("a" + chr(92) + "n" + "b") == "a\nb")
-    check("文本换行：多行文本原样保留", unescape("第一行\n第二行") == "第一行\n第二行")
-    check("文本换行：非字符串原样返回", unescape(None) is None)
-
 
 def main() -> int:
     text = GENERATOR.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")

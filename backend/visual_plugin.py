@@ -1395,20 +1395,13 @@ def _session_key(event: Optional[Event]) -> str:
         return "unknown"
 
 
-def _unescape_text(text: Any) -> Any:
-    """把手写的换行转义符（反斜杠加 n）变成真正的换行，兼容旧写法。"""
-    if not isinstance(text, str):
-        return text
-    return text.replace(chr(92) + "n", "\\n")
-
-
 def _build_message(msgs: list, ctx: dict) -> Message:
     out = Message()
     for seg in msgs or []:
         t = seg.get("type", "text")
         v = _tpl(seg.get("value", ""), ctx)
         if t == "text":
-            out += MessageSegment.text(_unescape_text(v))
+            out += MessageSegment.text(v)
         elif t == "image":
             out += MessageSegment.image(v)
         elif t == "face":
