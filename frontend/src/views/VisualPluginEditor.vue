@@ -205,7 +205,7 @@
               <el-form-item label="取反">
                 <el-switch v-model="selectedNode.config.negate" active-text="结果取反" />
               </el-form-item>
-              <div class="sub-label">条件列表（左值支持 {{变量}}）</div>
+              <div class="sub-label" v-pre>条件列表（左值支持 {{变量}}）</div>
               <div v-for="(cond, idx) in selectedNode.config.conditions" :key="idx" class="cond-row">
                 <el-input v-model="cond.left" v-var-drop placeholder="左值" />
                 <el-select v-model="cond.op" style="width: 132px">
@@ -518,12 +518,25 @@
               <el-form-item v-if="selectedNode.config.target.type !== 'event'" :label="selectedNode.config.target.type === 'group' ? '群号' : 'QQ号'">
                 <el-input v-model="selectedNode.config.target.id" placeholder="留空则使用当前消息来源" />
               </el-form-item>
-              <div class="sub-label">消息内容（内容支持 {{变量}}）</div>
-              <div v-for="(seg, idx) in selectedNode.config.messages" :key="idx" class="msg-row">
+              <div class="sub-label" v-pre>消息内容（支持 {{变量}}，回车换行）</div>
+              <div
+                v-for="(seg, idx) in selectedNode.config.messages"
+                :key="idx"
+                class="msg-row"
+                :class="{ 'msg-row-multi': seg.type === 'text' }"
+              >
                 <el-select v-model="seg.type" style="width: 120px">
                   <el-option v-for="(label, t) in catalog.message_types" :key="t" :label="label" :value="t" />
                 </el-select>
-                <el-input v-model="seg.value" v-var-drop :placeholder="segPlaceholder(seg.type)" />
+                <el-input
+                  v-if="seg.type === 'text'"
+                  v-model="seg.value"
+                  v-var-drop
+                  type="textarea"
+                  :autosize="{ minRows: 1, maxRows: 8 }"
+                  placeholder="可多行，回车换行"
+                />
+                <el-input v-else v-model="seg.value" v-var-drop :placeholder="segPlaceholder(seg.type)" />
                 <el-button text type="danger" :icon="Delete" @click="selectedNode.config.messages.splice(idx, 1)" />
               </div>
               <el-button size="small" :icon="Plus" @click="selectedNode.config.messages.push({ type: 'text', value: '' })">
@@ -2344,6 +2357,18 @@ onBeforeUnmount(() => {
   gap: 6px;
   margin-bottom: 6px;
   align-items: center;
+}
+
+/* 文本消息是多行输入域，下拉框与删除按钮靠顶对齐，避免随行数下移 */
+.msg-row-multi {
+  align-items: flex-start;
+}
+
+.msg-row-multi :deep(.el-textarea__inner) {
+  min-height: 32px !important;
+  line-height: 1.6;
+  padding-top: 6px;
+  padding-bottom: 6px;
 }
 
 .opt-index {

@@ -565,6 +565,7 @@ import datetime
 import json
 import os
 import re
+import shutil
 import smtplib
 import ssl
 import subprocess
@@ -1115,24 +1116,119 @@ def _eval_logic(cfg: dict, ctx: dict) -> bool:
     return ok
 
 
-def _system_info() -> dict:
-    info: dict = {}
+_CPU_SAMPLE = {"total": 0, "idle": 0}
+_SYS_WARNED = False
+
+
+def _root_path() -> str:
+    """磁盘占用统计的根路径（Linux 为 /，Windows 为当前盘符）。"""
+    return os.path.abspath(os.sep)
+
+
+def _cpu_percent_proc(path: str = "/proc/stat") -> Optional[float]:
+    """读 /proc/stat，用两次采样的差值算 CPU 使用率；系统没有 /proc 时返回 None。"""
     try:
-        if psutil is not None:
-            info["cpu"] = psutil.cpu_percent(interval=None)
-            info["memory"] = psutil.virtual_memory().percent
-            try:
-                info["disk"] = psutil.disk_usage("/").percent
-            except Exception:  # noqa: BLE001
-                pass
-            if hasattr(os, "getloadavg"):
-                try:
-                    info["load"] = list(os.getloadavg())
-                except Exception:  # noqa: BLE001
-                    pass
-    except Exception:  # noqa: BLE001
-        pass
+        with open(path, "r", encoding="utf-8") as fp:
+            fields = fp.readline().split()
+        if not fields or fields[0] != "cpu":
+            return None
+        nums = [int(x) for x in fields[1:]]
+    except (OSError, ValueError):
+        return None
+    if len(nums) < 4:
+        return None
+    total = sum(nums)
+    idle = nums[3] + (nums[4] if len(nums) > 4 else 0)
+    prev_total, prev_idle = _CPU_SAMPLE["total"], _CPU_SAMPLE["idle"]
+    _CPU_SAMPLE["total"], _CPU_SAMPLE["idle"] = total, idle
+    if prev_total <= 0 or total <= prev_total:
+        return None
+    busy = (total - prev_total) - (idle - prev_idle)
+    return max(0.0, min(100.0, busy / (total - prev_total) * 100))
+
+
+def _cpu_percent() -> Optional[float]:
+    value = _cpu_percent_proc()
+    if value is None:
+        time.sleep(0.05)  # 首次没有基准值，补一次短间隔采样
+        value = _cpu_percent_proc()
+    return value
+
+
+def _memory_percent_proc(path: str = "/proc/meminfo") -> Optional[float]:
+    try:
+        fields: Dict[str, int] = {}
+        with open(path, "r", encoding="utf-8") as fp:
+            for line in fp:
+                key, _, rest = line.partition(":")
+                chunk = rest.strip().split()
+                if chunk:
+                    fields[key] = int(chunk[0])
+    except (OSError, ValueError):
+        return None
+    total = fields.get("MemTotal") or 0
+    if total <= 0:
+        return None
+    avail = fields.get("MemAvailable")
+    if avail is None:
+        avail = fields.get("MemFree", 0) + fields.get("Buffers", 0) + fields.get("Cached", 0)
+    return max(0.0, min(100.0, (1 - avail / total) * 100))
+
+
+def _disk_percent(path: str) -> Optional[float]:
+    try:
+        usage = shutil.disk_usage(path)
+    except OSError:
+        return None
+    if usage.total <= 0:
+        return None
+    return usage.used / usage.total * 100
+
+
+def _system_info() -> dict:
+    """系统状态：优先 psutil，缺依赖时退回标准库，保证机器人侧也能取到值。"""
+    global _SYS_WARNED
+    info: dict = {}
+    root = _root_path()
+    if psutil is not None:
+        try:
+            info["cpu"] = round(float(psutil.cpu_percent(interval=None)), 1)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            info["memory"] = round(float(psutil.virtual_memory().percent), 1)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            info["disk"] = round(float(psutil.disk_usage(root).percent), 1)
+        except Exception:  # noqa: BLE001
+            pass
+    if "cpu" not in info:
+        value = _cpu_percent()
+        if value is not None:
+            info["cpu"] = round(value, 1)
+    if "memory" not in info:
+        value = _memory_percent_proc()
+        if value is not None:
+            info["memory"] = round(value, 1)
+    if "disk" not in info:
+        value = _disk_percent(root)
+        if value is not None:
+            info["disk"] = round(value, 1)
+    if hasattr(os, "getloadavg"):
+        try:
+            info["load"] = [round(x, 2) for x in os.getloadavg()]
+        except Exception:  # noqa: BLE001
+            pass
     info["gpu"] = _gpu_info()
+    missing = [k for k in ("cpu", "memory", "disk") if k not in info]
+    if missing and not _SYS_WARNED:
+        _SYS_WARNED = True
+        nonebot.logger.warning(
+            "[可视化插件] 系统状态变量缺少 {}：机器人环境未安装 psutil，"
+            "当前系统也不支持标准库采样（Windows 可在机器人环境执行 "
+            "`pip install psutil` 解决）".format("/".join(missing))
+        )
     return info
 
 
@@ -1299,13 +1395,20 @@ def _session_key(event: Optional[Event]) -> str:
         return "unknown"
 
 
+def _unescape_text(text: Any) -> Any:
+    """把手写的换行转义符（反斜杠加 n）变成真正的换行，兼容旧写法。"""
+    if not isinstance(text, str):
+        return text
+    return text.replace(chr(92) + "n", "\\n")
+
+
 def _build_message(msgs: list, ctx: dict) -> Message:
     out = Message()
     for seg in msgs or []:
         t = seg.get("type", "text")
         v = _tpl(seg.get("value", ""), ctx)
         if t == "text":
-            out += MessageSegment.text(v)
+            out += MessageSegment.text(_unescape_text(v))
         elif t == "image":
             out += MessageSegment.image(v)
         elif t == "face":

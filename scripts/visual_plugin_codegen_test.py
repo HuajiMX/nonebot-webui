@@ -17,6 +17,7 @@ import ast
 import json
 import os
 import re
+import shutil
 import sys
 import tempfile
 import threading
@@ -224,6 +225,86 @@ def test_target_id(template: str) -> None:
     check("目标号码：变量不存在返回 0", target_id("{{nope}}", {}) == 0)
 
 
+def test_system_info(template: str) -> None:
+    """系统状态变量：机器人环境没装 psutil 时也要能取到值，且文本换行转义可用。"""
+    logger = _RecordingLogger()
+    ns: dict = {
+        "Any": Any,
+        "Dict": Dict,
+        "Optional": Optional,
+        "os": os,
+        "re": re,
+        "time": time,
+        "shutil": shutil,
+        "psutil": None,  # 模拟机器人 venv：只装了 nonebot，没有 psutil
+        "nonebot": types.SimpleNamespace(logger=logger),
+    }
+    start = template.index("_CPU_SAMPLE = {")
+    end = template.index("def _gpu_info(", start)
+    exec(compile(template[start:end], "<sysinfo>", "exec"), ns)
+    ns["_gpu_info"] = lambda: {}  # 显卡探测依赖 nvidia-smi，测试里替身掉
+
+    with tempfile.TemporaryDirectory() as tmp:
+        stat = Path(tmp) / "stat"
+        mem = Path(tmp) / "meminfo"
+
+        # CPU：第一次只建立基准，第二次按差值算
+        stat.write_text("cpu  100 0 100 800 0 0 0 0 0 0\n", encoding="utf-8")
+        check("系统状态：首次采样没有基准时返回 None", ns["_cpu_percent_proc"](str(stat)) is None)
+        stat.write_text("cpu  200 0 180 820 0 0 0 0 0 0\n", encoding="utf-8")
+        cpu = ns["_cpu_percent_proc"](str(stat))
+        check(
+            "系统状态：按两次采样差值算 CPU 使用率",
+            cpu is not None and 88 < cpu < 92,
+            f"实际 {cpu}",
+        )
+        check("系统状态：/proc/stat 不存在时返回 None", ns["_cpu_percent_proc"](str(Path(tmp) / "nope")) is None)
+
+        # 内存：优先 MemAvailable
+        mem.write_text(
+            "MemTotal:       1000000 kB\n"
+            "MemFree:         100000 kB\n"
+            "MemAvailable:    250000 kB\n"
+            "Buffers:          10000 kB\n"
+            "Cached:          100000 kB\n",
+            encoding="utf-8",
+        )
+        percent = ns["_memory_percent_proc"](str(mem))
+        check("系统状态：内存按 MemAvailable 计算", percent is not None and 74.9 < percent < 75.1, f"实际 {percent}")
+
+        # 老内核没有 MemAvailable 时退回 Free+Buffers+Cached
+        mem.write_text(
+            "MemTotal:       1000000 kB\n"
+            "MemFree:         100000 kB\n"
+            "Buffers:          10000 kB\n"
+            "Cached:          100000 kB\n",
+            encoding="utf-8",
+        )
+        percent = ns["_memory_percent_proc"](str(mem))
+        check(
+            "系统状态：无 MemAvailable 时用 Free+Buffers+Cached",
+            percent is not None and 78.9 < percent < 79.1,
+            f"实际 {percent}",
+        )
+
+        root = ns["_root_path"]()
+        disk = ns["_disk_percent"](root)
+        check("系统状态：磁盘占用可取值", disk is not None and 0 <= disk <= 100, f"实际 {disk}")
+
+        info = ns["_system_info"]()
+        check("系统状态：返回磁盘占用", isinstance(info.get("disk"), (int, float)), f"实际 {info}")
+        check("系统状态：gpu 字段始终存在", "gpu" in info)
+
+    # 文本里的 \\n 要转成真换行
+    start = template.index("def _unescape_text(")
+    end = template.index("def _build_message(", start)
+    exec(compile(template[start:end], "<unescape>", "exec"), ns)
+    unescape = ns["_unescape_text"]
+    check("文本换行：字面 \\n 转成真换行", unescape("a" + chr(92) + "n" + "b") == "a\nb")
+    check("文本换行：多行文本原样保留", unescape("第一行\n第二行") == "第一行\n第二行")
+    check("文本换行：非字符串原样返回", unescape(None) is None)
+
+
 def main() -> int:
     text = GENERATOR.read_text(encoding="utf-8").replace("\r\n", "\n").replace("\r", "\n")
     template = load_template(text)
@@ -318,6 +399,9 @@ def main() -> int:
 
     # 2.2 发送目标支持 {{变量}}（循环里逐个私聊）
     test_target_id(template)
+
+    # 2.3 系统状态变量与文本换行
+    test_system_info(template)
 
     # 3. 生成的插件代码（需要 WebUI 依赖）
     sys.path.insert(0, str(ROOT))
