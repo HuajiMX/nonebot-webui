@@ -33,7 +33,7 @@ backend/
   bot_manager.py      机器人注册、脚手架生成（BOT_PY_TEMPLATE）、venv/依赖安装；ADAPTERS 常量
   process_manager.py  机器人子进程生命周期管理
   plugin_manager.py   插件列表、启停（暂停时源码移入 .webui_disabled/）、上传安装（.py/.zip）、webui_disabled_plugins.json
-  terminal.py         终端会话（pywinpty / ptyprocess）
+  terminal.py         终端会话（pywinpty / ptyprocess；bot / system 两种类型，str/bytes 适配见文件头）
   monitor.py          系统监控（psutil）
   mailer.py           邮件服务：SMTP 配置存储（data/email.json）与发送
   notifier.py         系统通知：机器人断连 / 异常退出邮件提醒
@@ -86,7 +86,7 @@ cd frontend; npm install; npm run build
 | --- | --- |
 | `/api/auth` | 登录、初始化管理员、修改密码 |
 | `/api/bots` | 机器人 CRUD、启停、插件列表/启停/上传（plugins、logs 也挂载在同前缀下） |
-| `/api/terminal` | 终端（WebSocket，连接需带 token 查询参数） |
+| `/api/terminal` | 终端（WebSocket `?type=bot&bot_id=...` 或 `?type=system`；连接需带 token 查询参数或 Cookie） |
 | `/api/monitor` | 系统监控数据 |
 | `/api/visual-plugins` | 可视化插件 CRUD、`/catalog` 组件目录、安装/卸载到机器人；`/{id}/storage` 查看/改键/删键/清空长期存储 |
 | `/api/update` | `GET /status` 版本检查（`?force=true` 绕过缓存）、`GET /log` 更新进度日志、`POST /` 触发更新 |
@@ -101,6 +101,14 @@ cd frontend; npm install; npm run build
 - `data/` 在 `.gitignore` 中（只保留 `data/.gitkeep`）。**绝不把用户数据提交进仓库**；修改代码时不要动本机 `data/` 里的真实数据。
 - `data/config.json` 支持 `host`、`port`、`update_repo`、`update_url`、`update_asset` 覆盖项。
 - 测试/隔离运行：设置 `NB_WEBUI_DATA` 指向独立目录，端口避开 9527（冒烟测试惯例用 9530）。
+
+### 内置终端
+
+- `backend/terminal.py` 的 `TerminalSession` 基于 pywinpty（Windows）/ ptyprocess（Unix）。**两个库的数据类型不同**：pywinpty 读写 `str`，ptyprocess 读返回 `bytes`、写只收 `bytes`。`_to_text` / `_to_pty_bytes` 负责统一——删掉它们会让 Linux 终端完全黑屏：`websocket.send_json` 收到 bytes 会抛 TypeError 悄悄杀死输出泵任务（Windows 上 pywinpty 返回 str，所以本机测试发现不了）。
+- 终端类型只有两种：`bot`（机器人目录 + 自动激活其 venv）与 `system`（侧边栏「终端」页的普通 shell，工作目录为用户主目录）。协议端终端 / 自定义终端已删除，`Bot.terminal_command` 字段已移除。
+- reader 线程在 `attach` 之前产生的输出先写入线程安全 `_backlog`（deque），attach 时一次性回放，避免丢失首屏（Linux 下 bash 提示符几十毫秒就到）。
+- 会话关闭顺序铁律见 `TerminalSession.close()` 的注释（先杀进程组 → 等 reader → 才关 master）。
+- Windows 下 `cmd /k` 首个提示符受 conda AutoRun 等影响需 2～20 秒不等，前端状态指示与「首次启动 shell 需要几秒」提示即为此设计。
 
 ### 认证
 

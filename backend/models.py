@@ -33,7 +33,6 @@ class Bot(BaseModel):
     plugin_dir: str = "src/plugins"
     status: str = "stopped"  # creating/starting/running/stopping/stopped/error
     pid: Optional[int] = None
-    terminal_command: str = ""
     auto_start: bool = False
     managed: bool = True  # 是否由 WebUI 生成脚手架（true 时支持插件启停过滤加载）
     created_at: str = ""
@@ -84,7 +83,6 @@ class BotUpdate(BaseModel):
     name: Optional[str] = None
     host: Optional[str] = None
     port: Optional[int] = None
-    terminal_command: Optional[str] = None
     auto_start: Optional[bool] = None
     plugin_dir: Optional[str] = None
     adapter: Optional[str] = None
@@ -152,7 +150,3 @@ class ConfigUpdate(BaseModel):
     """机器人 .env 配置更新。"""
 
     content: str
-
-
-class TerminalCommandRequest(BaseModel):
-    command: str = ""

@@ -21,6 +21,7 @@ const routes = [
       { path: "", name: "dashboard", component: () => import("../views/DashboardView.vue") },
       { path: "bots", name: "bots", component: () => import("../views/BotsView.vue") },
       { path: "bots/:id", name: "bot-detail", component: () => import("../views/BotDetailView.vue"), props: true },
+      { path: "terminal", name: "terminal", component: () => import("../views/TerminalView.vue") },
       { path: "visual-plugins", name: "visual-plugins", component: () => import("../views/VisualPluginsView.vue") },
       {
         path: "visual-plugins/:id",

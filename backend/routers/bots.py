@@ -93,7 +93,7 @@ def update_bot(bot_id: str, data: BotUpdate, _: str = Depends(current_user)) -> 
         if any(b.name == name and b.id != bot_id for b in bot_manager.list_bots()):
             raise HTTPException(status_code=400, detail="已存在同名机器人")
         bot.name = name
-    for field in ("host", "port", "terminal_command", "auto_start", "plugin_dir"):
+    for field in ("host", "port", "auto_start", "plugin_dir"):
         if field in changed and changed[field] is not None:
             setattr(bot, field, changed[field])
     if "adapter" in changed and changed["adapter"]:

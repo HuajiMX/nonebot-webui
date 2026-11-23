@@ -3,15 +3,35 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import os
 import platform
 import signal
 import threading
 import time
 import uuid
-from typing import Dict, Optional
+from typing import Deque, Dict, Optional
 
 from .bot_manager import bot_manager
+from .config import PROJECT_ROOT
+
+
+def _to_text(data) -> str:
+    """ptyprocess 在 Linux 上返回 bytes，pywinpty 在 Windows 上返回 str。
+
+    统一转成 str：bytes 会令 ``websocket.send_json`` 抛 TypeError、
+    悄悄杀死输出泵任务（Linux 上终端表现为永远黑屏的根因之一）。
+    """
+    if isinstance(data, bytes):
+        return data.decode("utf-8", "replace")
+    return data
+
+
+def _to_pty_bytes(data: str):
+    """写方向同理：ptyprocess 只收 bytes，pywinpty 只收 str。"""
+    if platform.system() != "Windows" and isinstance(data, str):
+        return data.encode("utf-8")
+    return data
 
 
 class TerminalSession:
@@ -32,8 +52,8 @@ class TerminalSession:
         self.rows = rows
         self.cols = cols
         self.pty = None
-        self.queue: asyncio.Queue = asyncio.Queue(maxsize=2000)
         self.subscribers: set[asyncio.Queue] = set()
+        self._backlog: Deque[dict] = collections.deque(maxlen=4000)
         self._lock = threading.RLock()
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._stop = threading.Event()
@@ -48,6 +68,7 @@ class TerminalSession:
             full_env.update(env)
         full_env.setdefault("PYTHONUTF8", "1")
         full_env.setdefault("TERM", "xterm-256color")
+        full_env.setdefault("LANG", "C.UTF-8")
 
         if platform.system() == "Windows":
             self._spawn_windows(full_env)
@@ -151,43 +172,56 @@ class TerminalSession:
                 break
             if not data:
                 break
-            self._push({"type": "output", "data": data})
+            self._push({"type": "output", "data": _to_text(data)})
         self.alive = False
         self._push({"type": "exit", "data": ""})
 
     def _push(self, msg: dict) -> None:
-        if self._loop and not self._loop.is_closed():
-            self._loop.call_soon_threadsafe(self._async_push, msg)
+        """reader 线程发消息：先进线程安全缓冲，再调度到事件循环。
 
-    def _async_push(self, msg: dict) -> None:
-        for q in list(self.subscribers):
+        attach 之前（会话刚创建、WebSocket 处理器尚未拿到队列）产生的输出
+        不会丢——attach 时会把缓冲一次性回放。
+        """
+        with self._lock:
+            self._backlog.append(msg)
+        loop = self._loop
+        if loop and not loop.is_closed():
             try:
-                q.put_nowait(msg)
-            except asyncio.QueueFull:
+                loop.call_soon_threadsafe(self._drain)
+            except RuntimeError:
                 pass
-        try:
-            self.queue.put_nowait(msg)
-        except asyncio.QueueFull:
-            pass
+
+    def _drain(self) -> None:
+        """把缓冲中的消息分发给所有订阅者（只在事件循环线程执行）。"""
+        while True:
+            with self._lock:
+                if not self._backlog:
+                    return
+                msg = self._backlog.popleft()
+            for q in list(self.subscribers):
+                try:
+                    q.put_nowait(msg)
+                except asyncio.QueueFull:
+                    pass
 
     def attach(self, loop: asyncio.AbstractEventLoop) -> asyncio.Queue:
         self._loop = loop
-        q: asyncio.Queue = asyncio.Queue(maxsize=2000)
+        q: asyncio.Queue = asyncio.Queue(maxsize=4000)
         self.subscribers.add(q)
+        try:
+            loop.call_soon_threadsafe(self._drain)
+        except RuntimeError:
+            pass
         return q
 
     def detach(self, q: asyncio.Queue) -> None:
         self.subscribers.discard(q)
 
     def write(self, data: str) -> None:
-        if self.pty is None:
+        if self.pty is None or not data:
             return
         try:
-            if platform.system() == "Windows":
-                # winpty 需要处理 \r 与特殊按键
-                self.pty.write(data)
-            else:
-                self.pty.write(data)
+            self.pty.write(_to_pty_bytes(data))
         except Exception:  # noqa: BLE001
             pass
 
@@ -354,6 +388,27 @@ def bot_terminal_command(bot_id: str) -> tuple[list[str] | str, str]:
         if os.path.exists(activate):
             return f'bash --rcfile "{activate}" -i', cwd
     return "bash -i", cwd
+
+
+def system_terminal_command() -> tuple[list[str] | str, str]:
+    """返回「普通终端」（非机器人绑定）的命令与工作目录。
+
+    侧边栏「终端」页使用：打开服务所在主机的一个常规 shell，
+    工作目录为用户主目录（取不到时退回项目根目录）。
+    """
+    if platform.system() == "Windows":
+        return ["cmd", "/k", "chcp 65001 >nul"], _home_or_root()
+    shell = os.environ.get("SHELL") or "/bin/bash"
+    if not os.path.exists(shell):
+        shell = "/bin/sh"
+    return f'"{shell}" -i', _home_or_root()
+
+
+def _home_or_root() -> str:
+    cwd = os.path.expanduser("~")
+    if not cwd or not os.path.isdir(cwd):
+        cwd = str(PROJECT_ROOT)
+    return cwd
 
 
 terminal_manager = TerminalManager()

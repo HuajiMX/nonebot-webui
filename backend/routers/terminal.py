@@ -1,4 +1,9 @@
-"""内置终端接口（WebSocket）。"""
+"""内置终端接口（WebSocket）。
+
+终端类型：
+- ``bot``：机器人环境终端（在机器人目录中打开并激活其 venv）；
+- ``system``：普通终端（服务所在主机的常规 shell，工作目录为用户主目录）。
+"""
 
 from __future__ import annotations
 
@@ -7,9 +12,8 @@ import json
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from ..bot_manager import bot_manager
 from ..deps import ws_auth
-from ..terminal import bot_terminal_command, terminal_manager
+from ..terminal import bot_terminal_command, system_terminal_command, terminal_manager
 
 
 router = APIRouter(prefix="/api/terminal", tags=["terminal"])
@@ -19,29 +23,26 @@ router = APIRouter(prefix="/api/terminal", tags=["terminal"])
 async def terminal_ws(websocket: WebSocket) -> None:
     await websocket.accept()
     try:
-        username = await ws_auth(websocket)
+        await ws_auth(websocket)
     except Exception:  # noqa: BLE001
         await websocket.close(code=4401, reason="未认证")
         return
 
-    bot_id = websocket.query_params.get("bot_id", "")
-    terminal_type = websocket.query_params.get("type", "bot")  # bot | protocol | custom
-    command = websocket.query_params.get("command", "")
-
-    bot = bot_manager.get_bot(bot_id)
-    if bot is None:
-        await websocket.close(code=4404, reason="机器人不存在")
+    terminal_type = websocket.query_params.get("type", "bot")
+    if terminal_type not in ("bot", "system"):
+        await websocket.close(code=4400, reason="不支持的终端类型")
         return
 
-    cwd = bot.directory
+    command = ""
     if terminal_type == "bot":
-        command, cwd = bot_terminal_command(bot_id)
-    elif terminal_type == "protocol":
-        command = bot.terminal_command or command
-        if not command:
-            await websocket.close(code=4400, reason="未配置协议端命令，请在机器人设置中填写 terminal_command")
+        bot_id = websocket.query_params.get("bot_id", "")
+        try:
+            command, cwd = bot_terminal_command(bot_id)
+        except ValueError:
+            await websocket.close(code=4404, reason="机器人不存在")
             return
-    # custom：使用 query command
+    else:
+        command, cwd = system_terminal_command()
 
     def _dim(value: str, default: int) -> int:
         try:
@@ -57,12 +58,20 @@ async def terminal_ws(websocket: WebSocket) -> None:
 
     await websocket.send_json({"type": "ready", "id": session.id, "command": command})
     if session.error:
+        # 启动失败（如 pty 依赖缺失）：告知前端并结束
         await websocket.send_json({"type": "exit", "data": session.error})
+        await websocket.close(code=1011, reason="终端启动失败")
+        await asyncio.to_thread(terminal_manager.remove, session.id)
+        return
 
     async def pump() -> None:
         while True:
             msg = await queue.get()
-            await websocket.send_json(msg)
+            try:
+                await websocket.send_json(msg)
+            except Exception:  # noqa: BLE001
+                # 发送失败（客户端已断开）时安静退出，绝不向上抛
+                return
 
     task = websocket.app.state.loop.create_task(pump())
     try:

@@ -51,10 +51,6 @@
               <el-form-item label="插件目录">
                 <el-input v-model="editForm.plugin_dir" />
               </el-form-item>
-              <el-form-item label="协议端终端命令">
-                <el-input v-model="editForm.terminal_command" placeholder="例如 napcat / D:\napcat\napcat.exe" />
-                <div class="muted">用于「终端」页的协议端终端</div>
-              </el-form-item>
               <el-form-item label="自动启动">
                 <el-switch v-model="editForm.auto_start" />
                 <div class="muted auto-start-hint">勾选后，WebUI 每次启动都会自动拉起该机器人</div>
@@ -84,12 +80,9 @@
         <PluginPanel v-if="tab === 'plugins'" :bot-id="id" />
       </el-tab-pane>
 
-      <el-tab-pane label="终端" name="terminal">
-        <TerminalPanel
-          v-if="tab === 'terminal'"
-          :bot-id="id"
-          :protocol-command="bot.terminal_command"
-        />
+      <el-tab-pane label="终端" name="terminal" lazy>
+        <div class="muted term-tip">在机器人目录中打开的终端，已自动激活其虚拟环境；可用于安装依赖、调试插件等操作。</div>
+        <TerminalPanel v-if="tab === 'terminal'" :bot-id="id" mode="bot" />
       </el-tab-pane>
 
       <el-tab-pane label="配置文件" name="config">
@@ -143,7 +136,6 @@ const editForm = reactive({
   host: "",
   port: 8080,
   plugin_dir: "src/plugins",
-  terminal_command: "",
   auto_start: false,
 });
 
@@ -158,7 +150,6 @@ async function load() {
       host: bot.value.host,
       port: bot.value.port,
       plugin_dir: bot.value.plugin_dir,
-      terminal_command: bot.value.terminal_command || "",
       auto_start: bot.value.auto_start,
     });
   } finally {
@@ -364,5 +355,9 @@ onBeforeUnmount(() => {
   background: #1e1e1e;
   color: #d4d4d4;
   border-radius: 8px;
+}
+
+.term-tip {
+  margin-bottom: 10px;
 }
 </style>

@@ -122,6 +122,7 @@ const dismissedVersion = ref(localStorage.getItem("nb_update_dismissed") || "");
 const navs = [
   { path: "/", label: "仪表盘", icon: "Odometer" },
   { path: "/bots", label: "机器人管理", icon: "Cpu" },
+  { path: "/terminal", label: "终端", icon: "Monitor" },
   { path: "/visual-plugins", label: "可视化插件编写", icon: "MagicStick" },
   { path: "/settings", label: "系统设置", icon: "Setting" },
 ];

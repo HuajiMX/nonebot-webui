@@ -1,38 +1,24 @@
 <template>
   <div class="term-panel">
     <div class="term-head">
-      <el-tabs v-model="active" @tab-change="onTabChange" class="term-tabs">
-        <el-tab-pane label="机器人环境终端" name="bot" />
-        <el-tab-pane label="协议端终端" name="protocol" />
-        <el-tab-pane label="自定义终端" name="custom" />
-      </el-tabs>
-
+      <div class="term-title">
+        <span class="term-dot" :class="dotClass"></span>
+        <span class="term-name">{{ title }}</span>
+        <span class="term-status">{{ statusText }}</span>
+      </div>
       <div class="term-actions">
-        <el-button size="small" :icon="Refresh" @click="connect">重连</el-button>
-        <el-button size="small" :icon="Close" @click="disconnect">断开</el-button>
+        <el-button
+          size="small"
+          :icon="Refresh"
+          :disabled="status === 'connecting'"
+          @click="connect"
+        >重新连接</el-button>
+        <el-button size="small" :icon="Delete" @click="clearScreen">清屏</el-button>
+        <el-button v-if="status === 'connected'" size="small" :icon="Close" @click="disconnect(true)">断开</el-button>
       </div>
     </div>
 
-    <div v-if="active === 'custom'" class="custom-bar">
-      <el-input
-        v-model="customCommand"
-        placeholder="输入要执行的命令，例如：cmd /k 或 napcat"
-        style="flex: 1"
-        @keyup.enter="connect"
-      />
-      <el-button type="primary" @click="connect">连接</el-button>
-    </div>
-
-    <div v-if="active === 'protocol' && !hasProtocolCommand" class="protocol-hint">
-      <el-alert
-        type="warning"
-        :closable="false"
-        title="尚未配置协议端命令"
-        description="请在「概览」页的 协议端终端命令 中填写协议端可执行文件或命令（例如 napcat / napcat.exe），保存后即可在此打开协议端终端。"
-      />
-    </div>
-
-    <div ref="termEl" class="term-box"></div>
+    <div ref="termEl" class="term-box" @mousedown="focusTerm" @contextmenu.prevent="pasteFromClipboard"></div>
   </div>
 </template>
 
@@ -40,24 +26,39 @@
 import { computed, onBeforeUnmount, onMounted, ref } from "vue";
 import { Terminal } from "@xterm/xterm";
 import { FitAddon } from "@xterm/addon-fit";
-import { Close, Refresh } from "@element-plus/icons-vue";
+import { Close, Delete, Refresh } from "@element-plus/icons-vue";
 import "@xterm/xterm/css/xterm.css";
 import { wsUrl } from "../api";
 
 const props = defineProps({
-  botId: { type: String, required: true },
-  protocolCommand: { type: String, default: "" },
+  /** bot = 机器人环境终端（需 botId）；system = 普通系统终端 */
+  mode: { type: String, default: "bot" },
+  botId: { type: String, default: "" },
+  /** 终端区域高度 */
+  height: { type: String, default: "calc(100vh - 215px)" },
 });
 
-const active = ref("bot");
-const customCommand = ref("");
+const title = computed(() => (props.mode === "bot" ? "机器人环境终端" : "系统终端"));
+
 const termEl = ref(null);
 let term = null;
 let fit = null;
 let ws = null;
-let disposed = false;
+let resizeObserver = null;
+let reconnectTimer = null;
 
-const hasProtocolCommand = computed(() => !!props.protocolCommand?.trim());
+// idle / connecting / connected / disconnected / ended
+const status = ref("idle");
+const statusText = computed(() => {
+  switch (status.value) {
+    case "connecting": return "连接中…";
+    case "connected": return "已连接";
+    case "ended": return "会话已结束，可点击「重新连接」";
+    case "disconnected": return "已断开，可点击「重新连接」";
+    default: return "未连接";
+  }
+});
+const dotClass = computed(() => status.value);
 
 function initTerm() {
   if (term) return;
@@ -71,7 +72,7 @@ function initTerm() {
       cursor: "#ea5252",
       selectionBackground: "rgba(234,82,82,0.35)",
     },
-    scrollback: 3000,
+    scrollback: 5000,
   });
   fit = new FitAddon();
   term.loadAddon(fit);
@@ -81,12 +82,19 @@ function initTerm() {
       ws.send(JSON.stringify({ type: "input", data }));
     }
   });
-  setTimeout(fitTerm, 50);
-  window.addEventListener("resize", onResize);
+  // 容器尺寸变化（切换标签页、窗口缩放、侧栏折叠）都能自动适配
+  resizeObserver = new ResizeObserver(() => fitTerm());
+  resizeObserver.observe(termEl.value);
+  setTimeout(() => {
+    fitTerm();
+    term.focus();
+  }, 50);
 }
 
 function fitTerm() {
-  if (!fit) return;
+  if (!fit || !termEl.value) return;
+  const { clientWidth, clientHeight } = termEl.value;
+  if (clientWidth < 40 || clientHeight < 40) return;
   try {
     fit.fit();
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -99,41 +107,51 @@ function fitTerm() {
   }
 }
 
-function onResize() {
-  setTimeout(fitTerm, 100);
+function focusTerm() {
+  // 点击终端任意位置即聚焦，无需精确点到输入行
+  setTimeout(() => term && term.focus(), 0);
+}
+
+async function pasteFromClipboard() {
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text && ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ type: "input", data: text }));
+    }
+  } catch {
+    /* 无剪贴板权限时忽略 */
+  }
 }
 
 function connect() {
   initTerm();
   term.reset();
   disconnect();
+  status.value = "connecting";
 
-  const params = { bot_id: props.botId, rows: term.rows, cols: term.cols };
-  if (active.value === "bot") {
+  const params = { rows: term.rows, cols: term.cols };
+  if (props.mode === "bot") {
     params.type = "bot";
-  } else if (active.value === "protocol") {
-    params.type = "protocol";
+    params.bot_id = props.botId;
+    term.writeln("\x1b[90m正在连接机器人环境终端（首次启动 shell 需要几秒）...\x1b[0m");
   } else {
-    params.type = "custom";
-    if (!customCommand.value.trim()) {
-      term.writeln("\x1b[33m请输入要执行的命令\x1b[0m");
-      return;
-    }
-    params.command = customCommand.value.trim();
+    params.type = "system";
+    term.writeln("\x1b[90m正在连接系统终端...\x1b[0m");
   }
 
-  term.writeln("\x1b[90m正在连接终端...\x1b[0m");
   ws = new WebSocket(wsUrl("/api/terminal/ws", params));
-  ws.onopen = () => {
-    term.writeln("");
-  };
   ws.onmessage = (ev) => {
     try {
       const msg = JSON.parse(ev.data);
-      if (msg.type === "output") {
+      if (msg.type === "ready") {
+        status.value = "connected";
+      } else if (msg.type === "output") {
         term.write(msg.data);
       } else if (msg.type === "exit") {
-        term.writeln(`\r\n\x1b[33m${msg.data || "[会话已结束]"}\x1b[0m`);
+        if (msg.data) {
+          term.writeln(`\r\n\x1b[33m${msg.data}\x1b[0m`);
+        }
+        status.value = "ended";
       } else if (msg.type === "error") {
         term.writeln(`\r\n\x1b[31m${msg.data}\x1b[0m`);
       }
@@ -141,23 +159,48 @@ function connect() {
       /* ignore */
     }
   };
-  ws.onclose = () => {
-    term.writeln("\x1b[90m[连接已断开]\x1b[0m");
+  ws.onclose = (ev) => {
+    // 正常关闭（服务端主动结束）时已在 exit 分支提示
+    if (status.value !== "ended") {
+      status.value = "disconnected";
+      term.writeln(`\r\n\x1b[90m[连接已断开${ev.reason ? `：${ev.reason}` : ""}]\x1b[0m`);
+    }
+    ws = null;
+    scheduleAutoReconnect();
   };
-  ws.onerror = () => ws.close();
+  ws.onerror = () => {
+    if (ws) ws.close();
+  };
   setTimeout(fitTerm, 80);
 }
 
-function disconnect() {
+/** 意外断开时 3 秒后自动重连一次，避免用户面对黑屏手动刷新 */
+function scheduleAutoReconnect() {
+  if (status.value !== "disconnected") return;
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    if (status.value === "disconnected") connect();
+  }, 3000);
+}
+
+function disconnect(manual = false) {
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
   if (ws) {
     ws.onclose = null;
+    ws.onmessage = null;
+    ws.onerror = null;
     ws.close();
     ws = null;
   }
+  if (manual) status.value = "idle";
 }
 
-function onTabChange() {
-  connect();
+function clearScreen() {
+  if (term) term.clear();
 }
 
 onMounted(() => {
@@ -166,9 +209,11 @@ onMounted(() => {
 });
 
 onBeforeUnmount(() => {
-  disposed = true;
   disconnect();
-  window.removeEventListener("resize", onResize);
+  if (resizeObserver) {
+    resizeObserver.disconnect();
+    resizeObserver = null;
+  }
   if (term) {
     term.dispose();
     term = null;
@@ -181,32 +226,65 @@ onBeforeUnmount(() => {
 .term-panel {
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 210px);
+  height: v-bind("props.height");
 }
 
 .term-head {
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 10px;
 }
 
-.term-tabs {
-  flex: 1;
+.term-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  min-width: 0;
+}
+
+.term-name {
+  font-weight: 600;
+}
+
+.term-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: #909399;
+}
+
+.term-dot.connecting {
+  background: #e6a23c;
+  animation: term-pulse 1s infinite;
+}
+
+.term-dot.connected {
+  background: #67c23a;
+}
+
+.term-dot.disconnected,
+.term-dot.idle {
+  background: #c0c4cc;
+}
+
+.term-dot.ended {
+  background: #f56c6c;
+}
+
+.term-status {
+  color: var(--nb-text-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .term-actions {
   display: flex;
   gap: 8px;
-}
-
-.custom-bar {
-  display: flex;
-  gap: 10px;
-  margin-bottom: 10px;
-}
-
-.protocol-hint {
-  margin-bottom: 10px;
+  flex-shrink: 0;
 }
 
 .term-box {
@@ -215,5 +293,11 @@ onBeforeUnmount(() => {
   border-radius: 10px;
   padding: 10px;
   overflow: hidden;
+  cursor: text;
+}
+
+@keyframes term-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.3; }
 }
 </style>

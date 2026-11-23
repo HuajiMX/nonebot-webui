@@ -99,7 +99,7 @@ curl -fsSL https://raw.githubusercontent.com/HuajiMX/nonebot-webui/main/install.
 
 ### 连接你的 QQ
 
-OneBot V11 机器人默认通过反向 WebSocket 工作：在 NapCat 等协议端配置机器人地址（如 `ws://127.0.0.1:18080/onebot/v11/ws`）即可连通。WebUI 的「终端」页还能直接打开协议端终端，方便排查问题。
+OneBot V11 机器人默认通过反向 WebSocket 工作：在 NapCat 等协议端配置机器人地址（如 `ws://127.0.0.1:18080/onebot/v11/ws`）即可连通。侧边栏「终端」页可以打开服务器上的普通终端，机器人详情页的「终端」则会进入该机器人的环境（自动激活虚拟环境），方便安装依赖、排查问题。
 
 ### 拖出第一个插件
 
